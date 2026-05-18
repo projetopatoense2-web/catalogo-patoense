@@ -1,0 +1,47 @@
+# ─── Variáveis de ambiente e segredos ───
+.env
+.env.local
+.env.production
+.env.development
+*.key
+*.pem
+*.p12
+*.cert
+
+# ─── Firebase ───
+serviceAccountKey.json
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+firestore-debug.log
+ui-debug.log
+
+# ─── Dependências ───
+node_modules/
+package-lock.json
+yarn.lock
+
+# ─── Editores e IDEs ───
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# ─── Logs ───
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── Build e cache ───
+dist/
+build/
+.cache/
+.parcel-cache/
+.next/

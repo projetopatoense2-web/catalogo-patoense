@@ -1,0 +1,15 @@
+# ══════════════════════════════════════════════════════════════════
+#  NETLIFY _redirects — Distribuidora Patoense 2026
+# ══════════════════════════════════════════════════════════════════
+
+# Força HTTPS (Netlify já faz isso, mas garante)
+http://distribuidorapatoense.com.br/*  https://distribuidorapatoense.com.br/:splat  301!
+
+# Bloqueia acesso direto a arquivos de configuração sensíveis
+/firestore.rules         /index.html  403
+/firebase.json           /index.html  403
+/.env                    /index.html  403
+/netlify.toml            /index.html  403
+
+# SPA fallback: todas as rotas não encontradas voltam ao index
+/*  /index.html  200

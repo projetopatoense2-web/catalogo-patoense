@@ -1,0 +1,3483 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- CSP: restringe origens de scripts/estilos para reduzir risco de XSS -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; font-src https://fonts.gstatic.com; connect-src https://*.firebaseio.com https://*.googleapis.com https://firestore.googleapis.com wss://*.firebaseio.com; img-src 'self' data: blob:;">
+<meta name="referrer" content="no-referrer">
+<title>Catálogo Digital — Distribuidora Patoense 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Firebase SDK -->
+
+<!-- Firebase + Segurança (módulos ES) -->
+<script type="module">
+  import { db, doc, setDoc, getDoc, addDoc, collection,
+           onSnapshot, updateDoc, deleteDoc, serverTimestamp, getDocs }
+    from './js/firebase.js';
+
+  import { onAuthChange, loginCliente, loginAdmin, logout,
+           restoreClientSession, recuperarSenhaAdmin }
+    from './js/auth.js';
+
+  import { hashSenha, verificarSenha, checkRateLimit, resetRateLimit,
+           safeError, devLog }
+    from './js/security.js';
+
+  import { isAdminLocal, adminOnly, applyAdminGuardDOM, auditarAcao }
+    from './js/adminGuard.js';
+
+  window._fb = { db, doc, setDoc, getDoc, addDoc, collection,
+                 onSnapshot, updateDoc, deleteDoc, serverTimestamp, getDocs };
+
+  window._loginCliente   = loginCliente;
+  window._loginAdmin     = loginAdmin;
+  window._logout         = logout;
+  window._hashSenha      = hashSenha;
+  window._verificarSenha = verificarSenha;
+  window._checkRateLimit = checkRateLimit;
+  window._resetRateLimit = resetRateLimit;
+  window._recuperarSenha = recuperarSenhaAdmin;
+  window._isAdminLocal   = isAdminLocal;
+  window._adminOnly      = adminOnly;
+  window._auditarAcao    = auditarAcao;
+
+  onAuthChange((user, isAdmin) => {
+    applyAdminGuardDOM(isAdmin);
+    if (isAdmin) {
+      window._listenOrders?.();
+      window._listenPendingUsers?.();
+    }
+  });
+
+  window._listenOrders = function() {
+    if (!isAdminLocal()) return;
+    onSnapshot(collection(db, "pedidos"), (snapshot) => {
+      const newOrders = [];
+      snapshot.forEach(docSnap => {
+        newOrders.push({ _docId: docSnap.id, ...docSnap.data() });
+      });
+      newOrders.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      window.ORDERS = newOrders;
+      if (typeof window._syncOrders === 'function') window._syncOrders(newOrders);
+      if (typeof window.renderAdmOrders === 'function') window.renderAdmOrders();
+    });
+  };
+
+  window._listenPrices = function() {
+    onSnapshot(doc(db, "config", "prices"), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const newPrices = {};
+        Object.entries(data).forEach(([k,v]) => {
+          const clean = k.startsWith('_') ? k.slice(1) : k;
+          newPrices[clean] = v;
+        });
+        window.PRICES = newPrices;
+        try { localStorage.setItem('patoense_prices', JSON.stringify(window.PRICES)); } catch(e) {}
+        if (typeof window.render === 'function') window.render();
+      }
+    });
+  };
+
+  window._listenDisabled = function() {
+    onSnapshot(doc(db, "config", "disabled"), (snap) => {
+      if (snap.exists()) {
+        window.DISABLED = snap.data() || {};
+        try { localStorage.setItem('patoense_disabled', JSON.stringify(window.DISABLED)); } catch(e) {}
+        if (typeof window.render === 'function') window.render();
+      }
+    });
+  };
+
+  window._listenPromos = function() {
+    onSnapshot(doc(db, "config", "promos"), (snap) => {
+      if (snap.exists() && snap.data().list) {
+        window.PROMOS = snap.data().list;
+        try { localStorage.setItem('patoense_promos', JSON.stringify(window.PROMOS)); } catch(e) {}
+        if (typeof window.renderPromoCarousel === 'function') window.renderPromoCarousel();
+      }
+    });
+  };
+
+  window._listenPendingUsers = function() {
+    if (!isAdminLocal()) return;
+    onSnapshot(collection(db, "clientes_pendentes"), (snapshot) => {
+      window.PENDING_USERS = [];
+      snapshot.forEach(docSnap => {
+        window.PENDING_USERS.push({ _docId: docSnap.id, ...docSnap.data() });
+      });
+      window.PENDING_USERS.sort((a, b) => (b.createdAt||0) - (a.createdAt||0));
+      if (typeof window.renderPendingUsers === 'function') window.renderPendingUsers();
+    });
+  };
+
+  window._loadExtraProducts = async function() {
+    try {
+      const snap = await getDocs(collection(db, "produtos"));
+      if (snap.empty) return;
+      snap.forEach(docSnap => {
+        const p = docSnap.data();
+        if (!p.code || !p.name || !p.cat) return;
+        if (!window._DATA_REF[p.cat]) window._DATA_REF[p.cat] = [];
+        const already = window._DATA_REF[p.cat].some(x => x.code === p.code && x.name === p.name);
+        if (!already) window._DATA_REF[p.cat].unshift({ code: p.code, name: p.name });
+      });
+      if (typeof window.render === 'function') window.render();
+    } catch(e) {
+      safeError('loadExtraProducts', e);
+    }
+  };
+
+  window.addEventListener('load', async () => {
+    const waitAndListen = () => {
+      if (typeof window.renderPendingUsers === 'function' &&
+          typeof window.render === 'function') {
+        window._listenPrices();
+        window._listenDisabled();
+        window._listenPromos();
+        window._loadExtraProducts();
+      } else {
+        setTimeout(waitAndListen, 80);
+      }
+    };
+    waitAndListen();
+  });
+</script>
+
+<style>
+
+:root {
+  --blue:       #0B2F8A;
+  --blue-mid:   #1546C8;
+  --blue-light: #2563EB;
+  --blue-pale:  #EEF3FF;
+  --blue-ultra: #F5F8FF;
+  --white:      #FFFFFF;
+  --gray-bg:    #F2F5FB;
+  --border:     #D4DEFA;
+  --text:       #111827;
+  --muted:      #6B7BA8;
+  --green:      #25D366;
+  --green-dk:   #1DA851;
+  --red:        #EF4444;
+  --orange:     #F59E0B;
+  --sidebar-w:  238px;
+  --header-h:   72px;
+  --radius:     14px;
+  --shadow-sm:  0 2px 8px rgba(11,47,138,.08);
+  --shadow-md:  0 6px 24px rgba(11,47,138,.14);
+  --shadow-lg:  0 16px 48px rgba(11,47,138,.22);
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+body{
+  background:var(--gray-bg);
+  color:var(--text);
+  font-family:'Nunito',sans-serif;
+  min-height:100vh;
+}
+
+/* ────────────── MODAL BASE ────────────── */
+.modal-overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(11,47,138,.55);
+  z-index:900;
+  align-items:center;justify-content:center;
+  padding:16px;
+}
+.modal-overlay.open{display:flex}
+.modal-box{
+  background:#fff;border-radius:20px;
+  box-shadow:var(--shadow-lg);
+  width:100%;max-width:520px;
+  max-height:92vh;overflow-y:auto;
+  animation:modalIn .28s cubic-bezier(.4,0,.2,1);
+}
+@keyframes modalIn{from{opacity:0;transform:scale(.94) translateY(14px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.modal-box::-webkit-scrollbar{width:4px}
+.modal-box::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+.modal-head{
+  background:var(--blue);color:#fff;
+  padding:20px 24px;border-radius:20px 20px 0 0;
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:2;
+}
+.modal-head-title{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:22px;font-weight:900;letter-spacing:.5px;
+  display:flex;align-items:center;gap:10px;
+}
+.modal-close{
+  background:rgba(255,255,255,.15);border:none;color:#fff;
+  font-size:18px;width:34px;height:34px;border-radius:8px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;flex-shrink:0;
+}
+.modal-close:hover{background:rgba(255,255,255,.28)}
+
+.modal-body{padding:24px}
+
+/* ────────────── FORM ────────────── */
+.form-group{margin-bottom:16px}
+.form-label{
+  display:block;font-size:12px;font-weight:800;
+  text-transform:uppercase;letter-spacing:.8px;
+  color:var(--muted);margin-bottom:6px;
+}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-input{
+  width:100%;border:1.5px solid var(--border);border-radius:10px;
+  padding:10px 14px;font-family:'Nunito',sans-serif;font-size:14px;
+  color:var(--text);background:#fff;outline:none;
+  transition:border-color .18s,box-shadow .18s;
+}
+.form-input:focus{border-color:var(--blue-mid);box-shadow:0 0 0 3px rgba(21,70,200,.12)}
+.form-input.error{border-color:var(--red)}
+
+.doc-toggle-row{display:flex;gap:8px;margin-bottom:6px}
+.doc-toggle{
+  flex:1;padding:7px 10px;border-radius:8px;
+  border:1.5px solid var(--border);background:#fff;
+  font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+}
+.doc-toggle.active{background:var(--blue);border-color:var(--blue);color:#fff}
+
+.btn-primary{
+  width:100%;background:var(--blue);color:#fff;
+  border:none;border-radius:12px;padding:13px 20px;
+  font-family:'Nunito',sans-serif;font-size:15px;font-weight:800;
+  cursor:pointer;letter-spacing:.2px;
+  transition:background .16s,transform .12s,box-shadow .16s;
+  box-shadow:0 4px 16px rgba(11,47,138,.25);
+}
+.btn-primary:hover{background:var(--blue-mid);transform:translateY(-1px);box-shadow:0 6px 22px rgba(11,47,138,.3)}
+.btn-primary:active{transform:translateY(0)}
+
+.btn-secondary{
+  width:100%;background:var(--gray-bg);color:var(--blue);
+  border:1.5px solid var(--border);border-radius:12px;padding:11px 20px;
+  font-family:'Nunito',sans-serif;font-size:14px;font-weight:700;
+  cursor:pointer;transition:background .15s,border-color .15s;
+  margin-top:10px;
+}
+.btn-secondary:hover{background:var(--blue-pale);border-color:var(--blue)}
+
+.form-divider{
+  text-align:center;font-size:12px;color:var(--muted);
+  margin:16px 0;position:relative;
+}
+.form-divider::before,.form-divider::after{
+  content:'';position:absolute;top:50%;width:42%;height:1px;background:var(--border);
+}
+.form-divider::before{left:0}
+.form-divider::after{right:0}
+
+.form-error{color:var(--red);font-size:12px;margin-top:4px;display:none}
+.form-error.show{display:block}
+
+/* ────────────── WELCOME MODAL ────────────── */
+.welcome-banner{
+  background:linear-gradient(135deg,var(--blue) 0%,var(--blue-mid) 100%);
+  border-radius:16px;padding:24px;text-align:center;margin-bottom:20px;
+}
+.welcome-banner h2{
+  font-family:'Barlow Condensed',sans-serif;font-size:28px;font-weight:900;
+  color:#fff;letter-spacing:.5px;margin-bottom:6px;
+}
+.welcome-banner p{color:rgba(255,255,255,.75);font-size:14px}
+
+/* ────────────── HEADER ────────────── */
+header{
+  background:var(--blue);
+  position:sticky;top:0;z-index:300;
+  height:var(--header-h);
+  display:flex;align-items:center;gap:14px;
+  padding:0 22px;
+  box-shadow:0 4px 24px rgba(11,47,138,.35);
+}
+.logo-wrap{flex-shrink:0;display:flex;align-items:center;text-decoration:none}
+.logo-wrap svg{height:44px;width:auto}
+.v-divider{width:1px;height:34px;background:rgba(255,255,255,.2);flex-shrink:0}
+.search-wrap{flex:1;max-width:440px;position:relative}
+.search-wrap input{
+  width:100%;background:rgba(255,255,255,.13);
+  border:1.5px solid rgba(255,255,255,.22);
+  border-radius:10px;padding:9px 15px 9px 40px;
+  color:#fff;font-size:13.5px;font-family:'Nunito',sans-serif;
+  outline:none;transition:border-color .2s,background .2s;
+}
+.search-wrap input::placeholder{color:rgba(255,255,255,.5)}
+.search-wrap input:focus{border-color:rgba(255,255,255,.55);background:rgba(255,255,255,.19)}
+.search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:rgba(255,255,255,.5);font-size:15px;pointer-events:none}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.prod-count{font-size:12px;color:rgba(255,255,255,.6);white-space:nowrap}
+.prod-count strong{color:#fff;font-weight:800}
+
+/* USER BTN */
+.user-btn{
+  display:flex;align-items:center;gap:7px;
+  background:rgba(255,255,255,.13);border:1.5px solid rgba(255,255,255,.25);
+  border-radius:10px;padding:8px 13px;
+  color:#fff;font-family:'Nunito',sans-serif;font-size:12.5px;font-weight:700;
+  cursor:pointer;white-space:nowrap;flex-shrink:0;
+  transition:background .18s;
+}
+.user-btn:hover{background:rgba(255,255,255,.22)}
+.user-btn svg{width:15px;height:15px}
+
+/* ADM BTN */
+.adm-btn{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(245,158,11,.2);border:1.5px solid rgba(245,158,11,.4);
+  border-radius:10px;padding:8px 12px;
+  color:#FCD34D;font-family:'Nunito',sans-serif;font-size:12px;font-weight:800;
+  cursor:pointer;flex-shrink:0;
+  transition:background .18s;
+}
+.adm-btn:hover{background:rgba(245,158,11,.32)}
+
+/* CART BUTTON */
+.cart-btn{
+  position:relative;display:flex;align-items:center;gap:7px;
+  background:var(--green);border:none;border-radius:10px;
+  padding:9px 16px;color:#fff;font-family:'Nunito',sans-serif;
+  font-size:13.5px;font-weight:800;cursor:pointer;white-space:nowrap;
+  box-shadow:0 3px 14px rgba(37,211,102,.38);
+  transition:background .18s,transform .12s,box-shadow .18s;
+}
+.cart-btn:hover{background:var(--green-dk);transform:translateY(-1px);box-shadow:0 5px 20px rgba(37,211,102,.45)}
+.cart-btn:active{transform:translateY(0)}
+.cart-btn svg{width:17px;height:17px;flex-shrink:0}
+.cart-badge{
+  position:absolute;top:-8px;right:-8px;background:#EF4444;color:#fff;
+  font-size:10px;font-weight:800;min-width:20px;height:20px;
+  border-radius:10px;padding:0 4px;
+  display:flex;align-items:center;justify-content:center;
+  border:2.5px solid var(--blue);transition:transform .2s;
+}
+.cart-badge.hidden{display:none}
+@keyframes pop{0%{transform:scale(1)}50%{transform:scale(1.6)}100%{transform:scale(1)}}
+.cart-badge.pop{animation:pop .28s ease}
+.menu-toggle{
+  display:none;background:rgba(255,255,255,.13);border:1.5px solid rgba(255,255,255,.22);
+  border-radius:8px;padding:7px 10px;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0;
+}
+
+/* ────────────── LAYOUT ────────────── */
+.layout{display:flex;min-height:calc(100vh - var(--header-h))}
+
+/* ────────────── SIDEBAR ────────────── */
+aside{
+  width:var(--sidebar-w);flex-shrink:0;background:var(--white);
+  border-right:1px solid var(--border);padding:20px 0 48px;
+  position:sticky;top:var(--header-h);height:calc(100vh - var(--header-h));
+  overflow-y:auto;transition:transform .3s ease;
+  box-shadow:2px 0 12px rgba(11,47,138,.04);
+}
+aside::-webkit-scrollbar{width:4px}
+aside::-webkit-scrollbar-track{background:transparent}
+aside::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.sidebar-label{
+  font-size:10px;font-weight:800;letter-spacing:3px;text-transform:uppercase;
+  color:var(--muted);padding:0 18px 14px;
+  border-bottom:1px solid var(--border);margin-bottom:6px;
+}
+.cat-btn{
+  display:flex;align-items:center;justify-content:space-between;
+  width:100%;background:none;border:none;color:var(--text);
+  font-family:'Nunito',sans-serif;font-size:13px;font-weight:600;
+  padding:9px 18px;cursor:pointer;text-align:left;
+  border-left:3px solid transparent;
+  transition:background .14s,color .14s,border-color .14s;gap:8px;
+}
+.cat-btn .lbl{flex:1}
+.cat-btn:hover{background:var(--blue-ultra);color:var(--blue-mid)}
+.cat-btn.active{background:var(--blue-pale);color:var(--blue);border-left-color:var(--blue);font-weight:800}
+.cat-btn .badge{
+  background:var(--border);border-radius:20px;font-size:10px;font-weight:700;
+  padding:2px 8px;color:var(--muted);flex-shrink:0;transition:background .14s,color .14s;
+}
+.cat-btn.active .badge{background:var(--blue);color:#fff}
+.overlay{display:none;position:fixed;inset:0;background:rgba(11,47,138,.45);z-index:250}
+.overlay.open{display:block}
+
+/* ────────────── MAIN ────────────── */
+main{flex:1;padding:28px 28px 80px;min-width:0}
+.section-header{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap}
+.section-title{font-family:'Barlow Condensed',sans-serif;font-size:34px;font-weight:900;letter-spacing:.5px;color:var(--blue);line-height:1}
+.section-count{background:var(--border);border-radius:20px;font-size:12px;font-weight:700;padding:3px 11px;color:var(--muted)}
+
+/* ────────────── GRID & CARD ────────────── */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:14px}
+.card{
+  background:var(--white);border:1.5px solid var(--border);
+  border-radius:var(--radius);overflow:hidden;
+  display:flex;flex-direction:column;
+  transition:transform .2s,border-color .2s,box-shadow .2s;
+}
+.card:hover{transform:translateY(-4px);border-color:#A5B8F5;box-shadow:var(--shadow-md)}
+.img-area{
+  width:100%;aspect-ratio:1;background:var(--blue-ultra);
+  display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;border-bottom:1.5px solid var(--border);
+}
+.img-area img{width:100%;height:100%;object-fit:contain;padding:10px;display:block}
+.img-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;width:100%;height:100%;color:var(--border)}
+.img-placeholder svg{width:36px;height:36px;opacity:.4}
+.img-placeholder span{font-size:10px;color:var(--muted);letter-spacing:1px}
+.code-badge{
+  position:absolute;top:8px;left:8px;background:var(--blue);color:#fff;
+  font-size:9.5px;font-weight:800;padding:3px 7px;border-radius:5px;letter-spacing:.4px;z-index:2;
+}
+.card-body{padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:6px}
+.card-name{font-size:12px;font-weight:700;color:var(--text);line-height:1.38;flex:1}
+.card-code{font-size:10px;color:var(--muted);font-family:monospace}
+.add-btn{
+  width:100%;margin-top:4px;display:flex;align-items:center;justify-content:center;gap:6px;
+  background:var(--blue);color:#fff;border:none;border-radius:9px;padding:8px 10px;
+  font-family:'Nunito',sans-serif;font-size:11.5px;font-weight:800;cursor:pointer;letter-spacing:.2px;
+  transition:background .15s,transform .1s;
+}
+.add-btn:hover{background:var(--blue-mid);transform:scale(1.03)}
+.add-btn.added{background:#059669}
+.add-btn svg{width:13px;height:13px;flex-shrink:0}
+
+/* ────────────── CART DRAWER ────────────── */
+.cart-overlay{display:none;position:fixed;inset:0;background:rgba(11,47,138,.42);z-index:490}
+.cart-overlay.open{display:block}
+.cart-drawer{
+  position:fixed;top:0;right:-430px;width:420px;max-width:100vw;height:100vh;
+  background:#fff;z-index:500;display:flex;flex-direction:column;
+  box-shadow:-10px 0 50px rgba(11,47,138,.22);border-left:1px solid var(--border);
+  transition:right .34s cubic-bezier(.4,0,.2,1);
+}
+.cart-drawer.open{right:0}
+.cart-head{
+  background:var(--blue);color:#fff;padding:18px 20px;
+  display:flex;align-items:center;justify-content:space-between;flex-shrink:0;
+}
+.cart-head-title{
+  font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:900;
+  letter-spacing:.5px;display:flex;align-items:center;gap:9px;
+}
+.cart-close{
+  background:rgba(255,255,255,.15);border:none;color:#fff;
+  font-size:18px;width:34px;height:34px;border-radius:8px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;
+}
+.cart-close:hover{background:rgba(255,255,255,.28)}
+.cart-body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.cart-body::-webkit-scrollbar{width:4px}
+.cart-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.cart-empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:12px;color:var(--muted);text-align:center;padding:40px 20px;
+}
+.cart-empty svg{width:58px;height:58px;opacity:.22}
+.cart-empty p{font-size:15px;font-weight:700;color:#9CA3C8}
+.cart-empty small{font-size:12px}
+.cart-item{
+  background:var(--gray-bg);border:1.5px solid var(--border);border-radius:12px;
+  padding:11px 13px;display:flex;align-items:center;gap:11px;
+}
+@keyframes slideIn{from{opacity:0;transform:translateX(22px)}to{opacity:1;transform:translateX(0)}}
+.cart-item{animation:slideIn .24s ease}
+.ci-info{flex:1;min-width:0}
+.ci-name{font-size:12.5px;font-weight:700;color:var(--text);line-height:1.3;margin-bottom:3px}
+.ci-code{font-size:10px;color:var(--muted);font-family:monospace}
+.ci-qty{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.qty-btn{
+  width:27px;height:27px;border-radius:7px;border:1.5px solid var(--border);background:#fff;
+  color:var(--blue);font-size:16px;font-weight:800;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .14s,border-color .14s;line-height:1;
+}
+.qty-btn:hover{background:var(--blue-pale);border-color:var(--blue)}
+.qty-num{font-size:14px;font-weight:800;color:var(--blue);min-width:24px;text-align:center}
+.remove-btn{background:none;border:none;color:#CBD5E1;font-size:16px;cursor:pointer;padding:2px 4px;transition:color .14s;flex-shrink:0}
+.remove-btn:hover{color:#EF4444}
+.cart-foot{
+  border-top:1.5px solid var(--border);padding:16px 18px 22px;
+  flex-shrink:0;display:flex;flex-direction:column;gap:10px;
+}
+.cart-meta{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
+.cart-meta strong{font-size:15px;color:var(--blue);font-weight:800}
+
+/* VENDEDORES */
+.vendedores-title{
+  font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;
+  color:var(--muted);margin-bottom:8px;
+}
+.vendedores-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.wa-vend-btn{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  background:var(--green);border:none;border-radius:10px;
+  color:#fff;font-family:'Nunito',sans-serif;cursor:pointer;padding:10px 8px;
+  box-shadow:0 3px 12px rgba(37,211,102,.28);
+  transition:background .16s,transform .12s;
+}
+.wa-vend-btn:hover{background:var(--green-dk);transform:translateY(-1px)}
+.wa-vend-btn svg{width:16px;height:16px;flex-shrink:0}
+.wa-vend-name{font-size:12px;font-weight:800;letter-spacing:.2px}
+.wa-vend-role{font-size:10px;opacity:.8}
+
+.wa-btn{
+  width:100%;background:var(--green);border:none;border-radius:12px;
+  color:#fff;font-family:'Nunito',sans-serif;font-size:15px;font-weight:800;
+  padding:14px 20px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  box-shadow:0 4px 20px rgba(37,211,102,.32);
+  transition:background .16s,transform .12s,box-shadow .16s;letter-spacing:.2px;
+}
+.wa-btn:hover{background:var(--green-dk);transform:translateY(-2px);box-shadow:0 6px 28px rgba(37,211,102,.42)}
+.wa-btn:active{transform:translateY(0)}
+.wa-btn svg{width:22px;height:22px;flex-shrink:0}
+.clear-btn{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;text-align:center;transition:color .14s}
+.clear-btn:hover{color:#EF4444}
+.no-results{grid-column:1/-1;text-align:center;padding:80px 20px;color:var(--muted)}
+.no-results h3{font-size:20px;margin-bottom:8px;color:#A5B8D5}
+
+/* ─── PROFILE BAR (topo da main) ─── */
+.profile-bar{
+  background:var(--white);border:1.5px solid var(--border);border-radius:12px;
+  padding:12px 18px;margin-bottom:20px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+}
+.profile-bar-info{flex:1;min-width:180px}
+.profile-bar-name{font-size:15px;font-weight:800;color:var(--blue)}
+.profile-bar-doc{font-size:12px;color:var(--muted);font-family:monospace}
+.profile-bar-actions{display:flex;gap:8px;flex-shrink:0}
+.profile-edit-btn{
+  background:var(--blue-pale);border:1.5px solid var(--border);border-radius:8px;
+  padding:6px 12px;font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  color:var(--blue);cursor:pointer;transition:background .14s;
+}
+.profile-edit-btn:hover{background:var(--border)}
+
+/* ─── ADMIN PANEL ─── */
+.admin-panel{
+  background:var(--white);border:1.5px solid #F59E0B55;border-radius:16px;
+  overflow:hidden;margin-bottom:24px;
+}
+.admin-panel-head{
+  background:linear-gradient(135deg,#78350F,#92400E);
+  padding:16px 22px;display:flex;align-items:center;justify-content:space-between;
+}
+.admin-panel-head h2{
+  font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:900;
+  color:#FCD34D;letter-spacing:.5px;display:flex;align-items:center;gap:10px;
+}
+.admin-panel-body{padding:20px 22px}
+.admin-tabs{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+.admin-tab{
+  padding:7px 16px;border-radius:8px;border:1.5px solid var(--border);
+  background:#fff;font-family:'Nunito',sans-serif;font-size:12.5px;font-weight:700;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+}
+.admin-tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+.admin-section{display:none}
+.admin-section.active{display:block}
+
+.admin-form{display:flex;flex-direction:column;gap:14px}
+.admin-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.admin-products-list{
+  border:1.5px solid var(--border);border-radius:12px;overflow:hidden;
+  max-height:380px;overflow-y:auto;
+}
+.admin-products-list::-webkit-scrollbar{width:4px}
+.admin-products-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.adm-prod-row{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 14px;border-bottom:1px solid var(--border);
+  font-size:13px;transition:background .12s;
+}
+.adm-prod-row:last-child{border-bottom:none}
+.adm-prod-row:hover{background:var(--blue-ultra)}
+.adm-prod-code{font-family:monospace;font-size:11px;color:var(--muted);flex-shrink:0;width:48px}
+.adm-prod-name{flex:1;font-weight:600;color:var(--text)}
+.adm-prod-cat{font-size:11px;color:var(--muted);flex-shrink:0}
+.adm-del-btn{
+  background:none;border:none;color:#CBD5E1;cursor:pointer;font-size:15px;
+  flex-shrink:0;padding:2px;transition:color .14s;
+}
+.adm-del-btn:hover{color:var(--red)}
+.adm-search{
+  width:100%;border:1.5px solid var(--border);border-radius:10px;
+  padding:9px 14px;font-family:'Nunito',sans-serif;font-size:13px;
+  outline:none;margin-bottom:12px;
+  transition:border-color .18s;
+}
+.adm-search:focus{border-color:var(--blue-mid)}
+
+.cat-select{
+  width:100%;border:1.5px solid var(--border);border-radius:10px;
+  padding:10px 14px;font-family:'Nunito',sans-serif;font-size:14px;
+  color:var(--text);background:#fff;outline:none;cursor:pointer;
+  transition:border-color .18s;
+}
+.cat-select:focus{border-color:var(--blue-mid)}
+
+.alert-msg{
+  padding:10px 14px;border-radius:10px;font-size:13px;font-weight:700;
+  margin-top:10px;display:none;
+}
+.alert-msg.success{background:#DCFCE7;color:#15803D;display:block}
+.alert-msg.error{background:#FEE2E2;color:#DC2626;display:block}
+
+/* ─── RESPONSIVE ─── */
+@media(min-width:769px) and (max-width:1024px){
+  :root{--sidebar-w:200px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:12px}
+  main{padding:22px 20px 60px}
+  .search-wrap{max-width:300px}
+}
+@media(max-width:768px){
+  :root{--header-h:58px;--mobile-bar-h:52px;}
+  header{padding:0 12px;gap:8px;}
+  .v-divider,.prod-count{display:none}
+  .menu-toggle{display:flex;align-items:center}
+  .logo-wrap svg{height:34px}
+  .search-wrap{max-width:none;flex:1}
+  .search-wrap input{font-size:13px;padding:8px 12px 8px 36px;}
+  .cart-btn .cart-label{display:none}
+  .cart-btn{padding:9px 12px;border-radius:50%;width:40px;height:40px;justify-content:center;}
+  .cart-btn svg{width:19px;height:19px}
+  .user-btn .user-label{display:none}
+  .user-btn{padding:8px;border-radius:50%;width:38px;height:38px;justify-content:center;}
+  .adm-btn .adm-label{display:none}
+  .adm-btn{padding:8px;border-radius:50%;width:38px;height:38px;justify-content:center;}
+  aside{
+    position:fixed;top:0;left:0;height:100vh;z-index:260;
+    transform:translateX(-110%);padding-top:var(--header-h);
+    box-shadow:var(--shadow-lg);
+  }
+  aside.open{transform:translateX(0)}
+  .cat-pills{
+    display:flex;overflow-x:auto;gap:8px;padding:10px 12px;
+    background:var(--white);border-bottom:1px solid var(--border);
+    position:sticky;top:var(--header-h);z-index:200;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;
+  }
+  .cat-pills::-webkit-scrollbar{display:none}
+  .pill-btn{
+    flex-shrink:0;background:var(--gray-bg);border:1.5px solid var(--border);
+    border-radius:20px;padding:5px 13px;font-family:'Nunito',sans-serif;
+    font-size:12px;font-weight:700;color:var(--muted);cursor:pointer;white-space:nowrap;
+    transition:background .14s,color .14s,border-color .14s;
+  }
+  .pill-btn.active{background:var(--blue);border-color:var(--blue);color:#fff;}
+  main{padding:14px 10px 90px}
+  .grid{grid-template-columns:repeat(2,1fr);gap:10px;}
+  .card-name{font-size:11.5px}
+  .add-btn{font-size:11px;padding:7px 8px}
+  .code-badge{font-size:9px;padding:2px 6px}
+  .section-title{font-size:24px}
+  .section-header{margin-bottom:14px}
+  .cart-drawer{width:100vw;padding-bottom:env(safe-area-inset-bottom,0px);}
+  .cart-foot{padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));}
+  .wa-btn{font-size:14px;padding:15px 20px}
+  .vendedores-grid{grid-template-columns:1fr 1fr}
+  .form-row{grid-template-columns:1fr}
+  .admin-row{grid-template-columns:1fr}
+  .modal-box{max-width:100%;border-radius:16px}
+}
+@media(max-width:360px){
+  .grid{gap:8px}
+  .card-body{padding:8px 10px 10px}
+  .card-name{font-size:11px}
+  .add-btn{font-size:10.5px;padding:6px 7px;gap:4px}
+}
+@media(min-width:1280px){
+  :root{--sidebar-w:260px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:16px}
+  main{padding:32px 36px 80px}
+  .search-wrap{max-width:520px}
+}
+@media(min-width:1600px){
+  .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px}
+  main{padding:36px 44px 80px}
+}
+
+
+/* ═══ NOVOS ESTILOS ═══ */
+
+/* CARROSSEL DE PROMOÇÕES */
+.promo-carousel-wrap {
+  margin-bottom: 24px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: var(--shadow-md);
+}
+.promo-carousel {
+  display: flex;
+  transition: transform .45s cubic-bezier(.4,0,.2,1);
+}
+.promo-slide {
+  min-width: 100%;
+  background: linear-gradient(135deg, var(--blue) 0%, var(--blue-mid) 100%);
+  border-radius: 16px;
+  padding: 28px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  position: relative;
+  overflow: hidden;
+}
+.promo-slide::before {
+  content: '';
+  position: absolute;
+  right: -30px;
+  top: -40px;
+  width: 200px;
+  height: 200px;
+  background: rgba(255,255,255,.06);
+  border-radius: 50%;
+}
+.promo-slide-badge {
+  background: #F59E0B;
+  color: #78350F;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  display: inline-block;
+  margin-bottom: 10px;
+}
+.promo-slide-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 26px;
+  font-weight: 900;
+  color: #fff;
+  letter-spacing: .5px;
+  line-height: 1.1;
+  margin-bottom: 8px;
+}
+.promo-slide-price {
+  font-size: 32px;
+  font-weight: 900;
+  color: #FCD34D;
+  font-family: 'Barlow Condensed', sans-serif;
+}
+.promo-slide-price span {
+  font-size: 14px;
+  color: rgba(255,255,255,.7);
+  font-weight: 600;
+  font-family: 'Nunito', sans-serif;
+}
+.promo-slide-img {
+  width: 110px;
+  height: 110px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 6px 18px rgba(0,0,0,.3));
+}
+.promo-placeholder-img {
+  width: 90px;
+  height: 90px;
+  background: rgba(255,255,255,.12);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  flex-shrink: 0;
+}
+.promo-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255,255,255,.2);
+  border: none;
+  color: #fff;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s;
+  z-index: 5;
+}
+.promo-nav:hover { background: rgba(255,255,255,.35); }
+.promo-nav.prev { left: 10px; }
+.promo-nav.next { right: 10px; }
+.promo-dots {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 5;
+}
+.promo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.4);
+  cursor: pointer;
+  transition: background .2s, transform .2s;
+  border: none;
+  padding: 0;
+}
+.promo-dot.active { background: #fff; transform: scale(1.3); }
+.promo-add-btn {
+  background: rgba(255,255,255,.18);
+  border: 1.5px solid rgba(255,255,255,.4);
+  color: #fff;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background .15s;
+  margin-top: 10px;
+  display: inline-block;
+}
+.promo-add-btn:hover { background: rgba(255,255,255,.28); }
+
+/* PREÇO NO CARD */
+.card-price {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--blue);
+  font-family: 'Barlow Condensed', sans-serif;
+  letter-spacing: .3px;
+}
+.card-price.no-price {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: 'Nunito', sans-serif;
+  font-weight: 600;
+}
+
+/* BADGE DESABILITADO / ESGOTADO */
+.card.disabled-item {
+  opacity: .6;
+  position: relative;
+}
+.card.disabled-item::after {
+  content: 'TEMPORARIAMENTE INDISPONÍVEL';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%,-50%) rotate(-20deg);
+  background: rgba(239,68,68,.88);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 900;
+  padding: 4px 10px;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
+}
+.card.out-of-stock .add-btn {
+  background: #9CA3AF;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* PAINEL ADMIN — tabs extras */
+.admin-tab-promo { background: linear-gradient(90deg,#F59E0B,#D97706); border-color: #F59E0B; color: #fff; }
+.admin-tab-promo.active { background: #D97706; border-color: #D97706; }
+.admin-tab-orders { background: linear-gradient(90deg,#8B5CF6,#7C3AED); border-color: #8B5CF6; color: #fff; }
+.admin-tab-orders.active { background: #7C3AED; border-color: #7C3AED; }
+
+/* PROMO ADMIN GRID */
+.promo-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.promo-admin-card {
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--blue-ultra);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+.promo-admin-card.selected {
+  border-color: #F59E0B;
+  background: #FFFBEB;
+}
+.promo-admin-card-name { font-size: 12px; font-weight: 700; line-height: 1.3; }
+.promo-admin-card-cat { font-size: 10px; color: var(--muted); }
+.promo-admin-price-row { display: flex; gap: 8px; align-items: center; }
+.promo-price-input {
+  flex: 1;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--blue);
+  outline: none;
+  background: #fff;
+}
+.promo-price-input:focus { border-color: var(--blue-mid); }
+.promo-select-btn {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--muted);
+  transition: all .15s;
+  white-space: nowrap;
+}
+.promo-select-btn.selected-btn {
+  background: #F59E0B;
+  border-color: #F59E0B;
+  color: #fff;
+}
+
+/* DISABLE BTN */
+.adm-disable-btn {
+  background: none;
+  border: none;
+  color: #F59E0B;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  transition: color .14s;
+  title: "Desabilitar/Habilitar";
+}
+.adm-disable-btn:hover { color: #D97706; }
+
+/* EDIT BTN */
+.adm-edit-btn {
+  background: none;
+  border: none;
+  color: #3B82F6;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  transition: color .14s;
+}
+.adm-edit-btn:hover { color: #1D4ED8; }
+
+/* CANCEL ORDER BTN */
+.order-cancel-btn {
+  background: #FEE2E2;
+  color: #DC2626;
+  border: 1px solid #FCA5A5;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .14s;
+}
+.order-cancel-btn:hover { background: #FECACA; }
+.adm-prod-row.out-of-stock-row { background: #FFF7ED; }
+.adm-prod-row.out-of-stock-row .adm-prod-name { text-decoration: line-through; color: var(--muted); }
+
+/* PRICE ADMIN */
+.adm-price-input {
+  width: 80px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--blue);
+  outline: none;
+  background: #fff;
+  flex-shrink: 0;
+}
+.adm-price-input:focus { border-color: var(--blue-mid); }
+
+/* ══ PEDIDOS PANEL — REDESIGN PROFISSIONAL ══ */
+.orders-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.orders-filter-group { display: flex; gap: 4px; background: var(--blue-ultra); border-radius: 10px; padding: 3px; }
+.orders-filter-btn {
+  border: none; background: transparent; border-radius: 8px; padding: 5px 13px;
+  font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 700;
+  color: var(--muted); cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.orders-filter-btn.active { background: #fff; color: var(--blue); box-shadow: 0 1px 4px rgba(11,47,138,.12); }
+.orders-search {
+  flex: 1; min-width: 160px; border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 7px 12px; font-family: 'Nunito', sans-serif; font-size: 12.5px;
+  color: var(--text); outline: none; transition: border .15s;
+}
+.orders-search:focus { border-color: var(--blue-mid); }
+.orders-stats {
+  display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 16px;
+}
+.orders-stat-card {
+  background: #fff; border: 1.5px solid var(--border); border-radius: 12px;
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 2px;
+}
+.orders-stat-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.orders-stat-value { font-size: 22px; font-weight: 900; color: var(--blue); line-height: 1; }
+.orders-stat-sub { font-size: 11px; color: var(--muted); }
+.orders-stat-card.stat-pending .orders-stat-value { color: #D97706; }
+.orders-stat-card.stat-confirmed .orders-stat-value { color: #059669; }
+
+.orders-table-wrap { overflow-x: auto; border: 1.5px solid var(--border); border-radius: 14px; background: #fff; }
+.orders-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.orders-table thead tr { background: var(--blue-pale); border-bottom: 1.5px solid var(--border); }
+.orders-table th {
+  padding: 10px 12px; text-align: left; font-size: 10px; font-weight: 900;
+  text-transform: uppercase; letter-spacing: .9px; color: var(--blue); white-space: nowrap;
+}
+.orders-table th:last-child { text-align: right; }
+.orders-table tbody tr {
+  border-bottom: 1px solid var(--border); cursor: pointer;
+  transition: background .12s;
+}
+.orders-table tbody tr:last-child { border-bottom: none; }
+.orders-table tbody tr:hover { background: var(--blue-ultra); }
+.orders-table tbody tr.expanded { background: var(--blue-ultra); }
+.orders-table td { padding: 10px 12px; vertical-align: middle; }
+.orders-table td:last-child { text-align: right; }
+.ot-id { font-family: monospace; font-weight: 800; font-size: 11px; color: var(--blue); }
+.ot-client { font-weight: 700; color: var(--text); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ot-date { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.ot-items { font-weight: 700; color: var(--muted); text-align: center; }
+.ot-value { font-weight: 800; color: var(--blue); white-space: nowrap; }
+.ot-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 800; padding: 3px 10px; border-radius: 20px;
+  text-transform: uppercase; letter-spacing: .6px; white-space: nowrap;
+}
+.ot-badge.pending { background: #FEF3C7; color: #92400E; }
+.ot-badge.confirmed { background: #D1FAE5; color: #059669; }
+.ot-badge.cancelled { background: #FEE2E2; color: #DC2626; }
+.ot-chevron { font-size: 12px; color: var(--muted); transition: transform .2s; display: inline-block; }
+.ot-chevron.open { transform: rotate(180deg); }
+
+/* Linha expansível */
+.orders-table tr.order-detail-row td { padding: 0; }
+.order-detail-box {
+  background: #F8FAFF; border-top: 1px solid var(--border);
+  padding: 16px 18px; display: none;
+}
+.order-detail-box.open { display: block; }
+.order-detail-grid {
+  display: grid; grid-template-columns: repeat(4,1fr); gap: 8px 16px; margin-bottom: 14px;
+}
+.order-detail-field { display: flex; flex-direction: column; gap: 2px; }
+.order-detail-field span:first-child { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
+.order-detail-field span:last-child { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.order-detail-items { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 14px; }
+.order-detail-items table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.order-detail-items thead { background: var(--blue-pale); }
+.order-detail-items th { padding: 7px 10px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; color: var(--blue); text-align: left; }
+.order-detail-items th:last-child { text-align: right; }
+.order-detail-items td { padding: 7px 10px; border-top: 1px solid var(--border); }
+.order-detail-items td:last-child { text-align: right; font-weight: 700; color: var(--blue); }
+.order-detail-items td.code { font-family: monospace; color: var(--muted); font-size: 10.5px; }
+.order-detail-total {
+  background: var(--blue-pale); border-radius: 10px; padding: 10px 14px;
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;
+}
+.order-detail-total span:first-child { font-size: 12px; font-weight: 700; color: var(--muted); }
+.order-detail-total span:last-child { font-size: 15px; font-weight: 900; color: var(--blue); }
+.order-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.order-print-btn {
+  background: var(--blue); color: #fff; border: none; border-radius: 8px;
+  padding: 7px 14px; font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: background .15s; display: flex; align-items: center; gap: 6px;
+}
+.order-print-btn:hover { background: var(--blue-mid); }
+.order-confirm-btn {
+  background: #D1FAE5; color: #065F46; border: 1.5px solid #A7F3D0; border-radius: 8px;
+  padding: 7px 14px; font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: background .15s;
+}
+.order-confirm-btn:hover { background: #A7F3D0; }
+.order-cancel-btn {
+  background: #FEE2E2; color: #DC2626; border: 1.5px solid #FCA5A5; border-radius: 8px;
+  padding: 7px 14px; font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: background .15s;
+}
+.order-cancel-btn:hover { background: #FCA5A5; }
+.orders-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+@media(max-width:640px){
+  .orders-stats { grid-template-columns: 1fr 1fr; }
+  .order-detail-grid { grid-template-columns: 1fr 1fr; }
+  .ot-date,.ot-value { display: none; }
+}
+
+/* CHECKOUT MODAL */
+.checkout-section { margin-bottom: 18px; }
+.checkout-section-title {
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.checkout-section-title::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.payment-methods { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.payment-btn {
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  font-family: 'Nunito', sans-serif;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all .15s;
+}
+.payment-btn.active {
+  border-color: var(--blue);
+  background: var(--blue-pale);
+  color: var(--blue);
+}
+.payment-btn .pay-icon { font-size: 18px; }
+.checkout-cart-summary {
+  background: var(--blue-ultra);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+.checkout-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 12.5px;
+}
+.checkout-item-row:last-child { border-bottom: none; }
+.checkout-item-name { font-weight: 600; flex: 1; }
+.checkout-item-qty { color: var(--muted); font-family: monospace; font-size: 11px; margin: 0 10px; }
+.checkout-total-row {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--blue);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1.5px solid var(--border);
+}
+.checkout-vend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.checkout-vend-btn {
+  background: #fff;
+  color: var(--blue);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 8px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: all .15s;
+}
+.checkout-vend-btn:hover { background: var(--blue-pale); border-color: var(--blue); transform: translateY(-1px); }
+.checkout-vend-btn.selected { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 4px 14px rgba(11,47,138,.28); }
+.checkout-vend-btn svg { width: 15px; height: 15px; }
+.btn-finalizar {
+  width: 100%; background: var(--green); color: #fff; border: none; border-radius: 14px;
+  padding: 15px 20px; font-family: 'Nunito', sans-serif; font-size: 15px; font-weight: 900;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 4px 20px rgba(37,211,102,.35); transition: background .16s, transform .12s;
+  letter-spacing: .3px; margin-top: 4px;
+}
+.btn-finalizar:hover { background: var(--green-dk); transform: translateY(-2px); }
+.btn-finalizar:active { transform: translateY(0); }
+.btn-finalizar:disabled { background: #9CA3AF; box-shadow: none; cursor: not-allowed; transform: none; opacity: .7; }
+.vend-hint { font-size: 12px; color: var(--muted); text-align: center; margin-top: 6px; }
+
+/* PENDING USERS BADGE */
+.pending-badge {
+  position: absolute; top: -7px; right: -7px;
+  background: #EF4444; color: #fff;
+  font-size: 10px; font-weight: 900; min-width: 18px; height: 18px;
+  border-radius: 9px; padding: 0 4px;
+  display: none; align-items: center; justify-content: center;
+  border: 2px solid var(--blue);
+}
+.adm-btn { position: relative; }
+
+/* PENDING USERS LIST */
+.pending-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.pending-card {
+  border: 1.5px solid #FEF3C7; border-radius: 12px;
+  overflow: hidden; background: #FFFBEB;
+}
+.pending-card-head {
+  background: #F59E0B; color: #fff;
+  padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.pending-card-name { font-weight: 800; font-size: 14px; }
+.pending-card-ts { font-size: 10px; opacity: .8; }
+.pending-card-body { padding: 10px 14px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
+.pending-card-actions { display: flex; gap: 8px; margin-top: 8px; }
+.pending-approve-btn {
+  flex: 1; background: #059669; color: #fff; border: none; border-radius: 8px;
+  padding: 8px 12px; font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 800; cursor: pointer;
+  transition: background .15s;
+}
+.pending-approve-btn:hover { background: #047857; }
+.pending-reject-btn {
+  flex: 1; background: #EF4444; color: #fff; border: none; border-radius: 8px;
+  padding: 8px 12px; font-family: 'Nunito', sans-serif; font-size: 12px; font-weight: 800; cursor: pointer;
+  transition: background .15s;
+}
+.pending-reject-btn:hover { background: #DC2626; }
+.no-pending { text-align: center; padding: 32px 20px; color: var(--muted); font-size: 14px; }
+
+/* WAITING APPROVAL SCREEN */
+.waiting-box {
+  background: #fff; border-radius: 20px; padding: 36px 28px; text-align: center;
+  box-shadow: var(--shadow-lg); max-width: 420px; width: 100%;
+}
+.waiting-icon { font-size: 56px; margin-bottom: 16px; }
+.waiting-title {
+  font-family: 'Barlow Condensed', sans-serif; font-size: 26px; font-weight: 900;
+  color: var(--blue); margin-bottom: 8px;
+}
+.waiting-msg { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
+.waiting-name { font-weight: 800; color: var(--text); font-size: 16px; margin-bottom: 4px; }
+
+/* FIX ADMIN PANEL MOBILE */
+@media(max-width:768px){
+  .admin-tabs { gap: 6px; }
+  .admin-tab { font-size: 11px; padding: 7px 8px; min-width: 70px; }
+  .admin-row { grid-template-columns: 1fr !important; }
+  .promo-admin-grid { grid-template-columns: 1fr !important; }
+  .adm-prod-row { flex-wrap: wrap; gap: 6px; }
+  .adm-prod-name { min-width: 0; flex: 1 1 100%; order: -1; }
+  .adm-price-input { width: 90px; }
+  #adminPanel { margin: 10px 0; border-radius: 14px; }
+  .pending-card-actions { flex-direction: column; }
+}
+
+/* PEDIDOS DRAG & DROP */
+.order-card {
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: grab;
+  transition: box-shadow .2s, opacity .2s, transform .2s;
+  user-select: none;
+}
+.order-card:active { cursor: grabbing; }
+.order-card.dragging {
+  opacity: .45;
+  transform: scale(.98);
+  box-shadow: none;
+}
+.order-card.drag-over {
+  box-shadow: 0 0 0 2.5px var(--blue-mid), 0 8px 24px rgba(11,47,138,.18);
+}
+.drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  font-size: 16px;
+  padding: 0 6px;
+  flex-shrink: 0;
+  opacity: .5;
+  transition: opacity .14s;
+}
+.drag-handle:hover { opacity: 1; }
+
+/* Melhorias responsivas adicionais */
+@media(max-width:480px){
+  .form-row{ grid-template-columns:1fr !important; }
+  .checkout-vend-grid{ grid-template-columns:1fr 1fr; }
+  .payment-methods{ grid-template-columns:1fr 1fr; }
+  .modal-box{ border-radius:12px; }
+  .admin-tabs{ gap:4px; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; }
+  .admin-tab{ font-size:10.5px; padding:6px 7px; white-space:nowrap; flex-shrink:0; }
+  .admin-panel-body{ padding:14px 12px; }
+  .profile-bar{ flex-direction:column; align-items:flex-start; }
+  .profile-bar-actions{ flex-wrap:wrap; gap:6px; }
+}
+@media(max-width:380px){
+  :root{ --header-h:54px; }
+  .cart-btn{ width:36px; height:36px; padding:8px; }
+  .user-btn{ width:36px; height:36px; padding:8px; }
+}
+
+@media print {
+  body * { visibility: hidden; }
+  #printArea, #printArea * { visibility: visible; }
+  #printArea { position: absolute; left: 0; top: 0; width: 100%; font-family: Arial, sans-serif; }
+  .no-print { display: none !important; }
+}
+
+@media(max-width:768px){
+  .promo-slide { padding: 18px 20px; }
+  .promo-slide-name { font-size: 18px; }
+  .promo-slide-price { font-size: 24px; }
+  .promo-placeholder-img { width: 60px; height: 60px; font-size: 28px; }
+  .payment-methods { grid-template-columns: 1fr 1fr; }
+  .checkout-vend-grid { grid-template-columns: 1fr 1fr; }
+  .promo-admin-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     MODAIS DE AUTENTICAÇÃO (mantidos do original)
+══════════════════════════════════════════ -->
+<div class="modal-overlay open" id="authModal" onclick="if(event.target===this){closeAuth()}">
+  <div class="modal-box" style="max-width:480px">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="22" height="22"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <span id="authModalTitle">Bem-vindo!</span>
+      </div>
+      <button class="modal-close" onclick="closeAuth()" title="Fechar">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="authWelcome">
+        <div class="welcome-banner">
+          <h2>🏪 Distribuidora Patoense</h2>
+          <p>Catálogo Digital 2026 — Faça seu cadastro ou entre para consultar preços</p>
+        </div>
+        <button class="btn-primary" onclick="showRegister()">Criar minha conta</button>
+        <button class="btn-secondary" onclick="showLogin()">Já tenho cadastro — Entrar</button>
+      </div>
+      <div id="authRegister" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Nome completo *</label>
+          <input class="form-input" id="regNome" placeholder="Seu nome completo" type="text">
+          <div class="form-error" id="errNome">Informe o nome completo</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Telefone / WhatsApp *</label>
+            <input class="form-input" id="regTel" placeholder="(83) 9xxxx-xxxx" type="tel">
+            <div class="form-error" id="errTel">Informe o telefone</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">E-mail</label>
+            <input class="form-input" id="regEmail" placeholder="seu@email.com" type="email">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tipo de documento *</label>
+          <div class="doc-toggle-row">
+            <button class="doc-toggle active" id="togCPF" onclick="setDocType('CPF')">CPF (pessoa física)</button>
+            <button class="doc-toggle" id="togCNPJ" onclick="setDocType('CNPJ')">CNPJ (empresa)</button>
+          </div>
+          <input class="form-input" id="regDoc" placeholder="000.000.000-00" type="text" maxlength="18" oninput="maskDoc(this)">
+          <div class="form-error" id="errDoc">Informe o documento</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Endereço / Bairro</label>
+          <input class="form-input" id="regEndereco" placeholder="Rua, número, bairro" type="text">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Cidade</label>
+            <input class="form-input" id="regCidade" placeholder="Patos" type="text">
+          </div>
+          <div class="form-group">
+            <label class="form-label">UF</label>
+            <input class="form-input" id="regUF" placeholder="PB" type="text" maxlength="2">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">🔒 Criar Senha de Acesso *</label>
+          <input class="form-input" id="regSenha" placeholder="Mínimo 6 caracteres" type="password" autocomplete="new-password">
+          <div class="form-error" id="errSenha">Informe uma senha com no mínimo 6 caracteres</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">🔒 Confirmar Senha *</label>
+          <input class="form-input" id="regSenha2" placeholder="Repita a senha" type="password" autocomplete="new-password">
+          <div class="form-error" id="errSenha2">As senhas não coincidem</div>
+        </div>
+        <button class="btn-primary" onclick="doRegister()">Criar conta e acessar</button>
+        <button class="btn-secondary" onclick="showLogin()">Já tenho cadastro</button>
+      </div>
+      <div id="authLogin" style="display:none">
+        <div class="form-group">
+          <label class="form-label">Nome ou telefone</label>
+          <input class="form-input" id="loginBusca" placeholder="Digite seu nome ou telefone" type="text">
+        </div>
+        <div class="form-group">
+          <label class="form-label">🔒 Senha</label>
+          <input class="form-input" id="loginSenha" placeholder="Sua senha de acesso" type="password" autocomplete="current-password">
+          <div class="form-error" id="errLogin">Cadastro não encontrado ou senha incorreta</div>
+        </div>
+        <button class="btn-primary" onclick="doLogin()">Entrar</button>
+        <button class="btn-secondary" onclick="showRegister()">Criar nova conta</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL EDITAR PERFIL -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal-box" style="max-width:460px">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="20" height="20"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Editar Cadastro
+      </div>
+      <button class="modal-close" onclick="closeEdit()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Nome completo</label><input class="form-input" id="editNome" type="text"></div>
+      <div class="form-group"><label class="form-label">Telefone / WhatsApp</label><input class="form-input" id="editTel" type="tel"></div>
+      <div class="form-group"><label class="form-label">E-mail</label><input class="form-input" id="editEmail" type="email"></div>
+      <div class="form-group">
+        <label class="form-label">Tipo de documento</label>
+        <div class="doc-toggle-row">
+          <button class="doc-toggle active" id="editTogCPF" onclick="setEditDocType('CPF')">CPF</button>
+          <button class="doc-toggle" id="editTogCNPJ" onclick="setEditDocType('CNPJ')">CNPJ</button>
+        </div>
+        <input class="form-input" id="editDoc" type="text" maxlength="18">
+      </div>
+      <div class="form-group"><label class="form-label">Endereço / Bairro</label><input class="form-input" id="editEndereco" type="text"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Cidade</label><input class="form-input" id="editCidade" type="text"></div>
+        <div class="form-group"><label class="form-label">UF</label><input class="form-input" id="editUF" type="text" maxlength="2"></div>
+      </div>
+      <button class="btn-primary" onclick="saveEdit()">Salvar alterações</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL AGUARDANDO APROVAÇÃO -->
+<div class="modal-overlay" id="waitingModal" style="background:rgba(11,47,138,.7)">
+  <div class="waiting-box">
+    <div class="waiting-icon">⏳</div>
+    <div class="waiting-title">Cadastro Enviado!</div>
+    <div class="waiting-name" id="waitingUserName"></div>
+    <div class="waiting-msg">
+      Seu cadastro está aguardando confirmação do <strong>ADMINISTRADOR</strong>.<br><br>
+      Em breve você receberá a liberação de acesso.<br>
+      Após aprovado, você poderá consultar preços e realizar pedidos.
+    </div>
+    <div style="background:#EEF3FF;border-radius:12px;padding:14px 18px;margin:16px 0;font-size:13px;color:var(--blue);font-weight:700;text-align:center">
+      🔔 Aguarde — o administrador irá aprovar seu acesso em breve.
+    </div>
+    <button class="btn-secondary" style="margin-top:0" onclick="closeWaiting()">Fechar</button>
+  </div>
+</div>
+
+<!-- MODAL EDITAR PRODUTO -->
+<div class="modal-overlay" id="editProductModal">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="20" height="20"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Editar Nome do Produto
+      </div>
+      <button class="modal-close" onclick="closeEditProduct()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Código</label>
+        <input class="form-input" id="epCode" type="text" readonly style="background:var(--gray-bg);color:var(--muted)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Nome atual</label>
+        <input class="form-input" id="epNameOld" type="text" readonly style="background:var(--gray-bg);color:var(--muted)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Novo nome *</label>
+        <input class="form-input" id="epNameNew" type="text" placeholder="Digite o novo nome do produto">
+        <div class="form-error" id="errEpName">Informe o novo nome</div>
+      </div>
+      <button class="btn-primary" onclick="confirmEditProduct()">💾 Salvar nome</button>
+      <button class="btn-secondary" onclick="closeEditProduct()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL ADM LOGIN -->
+<div class="modal-overlay" id="admLoginModal">
+  <div class="modal-box" style="max-width:380px">
+    <div class="modal-head">
+      <div class="modal-head-title">⚙️ Área Administrativa</div>
+      <button class="modal-close" onclick="closeAdmLogin()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">E-mail do administrador</label>
+        <input class="form-input" id="admEmail" type="email" placeholder="admin@patoense.com" style="margin-bottom:10px">
+        <label class="form-label">Senha</label>
+        <input class="form-input" id="admPass" type="password" placeholder="••••••••">
+        <div class="form-error" id="errAdmPass">E-mail ou senha incorretos</div>
+      </div>
+      <button class="btn-primary" onclick="doAdmLogin()">Acessar painel</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL CHECKOUT MELHORADO -->
+<div class="modal-overlay" id="checkoutModal">
+  <div class="modal-box" style="max-width:560px">
+    <div class="modal-head">
+      <div class="modal-head-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="20" height="20"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Finalizar Pedido
+      </div>
+      <button class="modal-close" onclick="closeCheckout()">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- Resumo do pedido -->
+      <div class="checkout-section">
+        <div class="checkout-section-title">Itens do Pedido</div>
+        <div class="checkout-cart-summary" id="checkoutSummary"></div>
+        <div class="checkout-total-row">
+          <span>Total de itens:</span>
+          <span id="checkoutTotalItems">0 itens</span>
+        </div>
+      </div>
+
+      <!-- Data de entrega -->
+      <div class="checkout-section">
+        <div class="checkout-section-title">Data de Entrega</div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">📅 Agendar entrega para</label>
+          <input class="form-input" id="checkoutDate" type="date" style="max-width:240px">
+        </div>
+        <div class="form-group" style="margin:8px 0 0">
+          <label class="form-label">⏰ Período preferido</label>
+          <select class="form-input cat-select" id="checkoutPeriod" style="max-width:240px">
+            <option value="">Qualquer horário</option>
+            <option value="manha">Manhã (8h – 12h)</option>
+            <option value="tarde">Tarde (12h – 18h)</option>
+            <option value="noite">Noite (18h – 21h)</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin:8px 0 0">
+          <label class="form-label">📍 Endereço de entrega</label>
+          <input class="form-input" id="checkoutAddress" type="text" placeholder="Rua, número, bairro, cidade">
+        </div>
+      </div>
+
+      <!-- Forma de pagamento -->
+      <div class="checkout-section">
+        <div class="checkout-section-title">Forma de Pagamento</div>
+        <div class="payment-methods" id="paymentMethods">
+          <button class="payment-btn" onclick="selectPayment(this,'pix')" data-pay="pix">
+            <span class="pay-icon">🔵</span> PIX
+          </button>
+          <button class="payment-btn" onclick="selectPayment(this,'dinheiro')" data-pay="dinheiro">
+            <span class="pay-icon">💵</span> Dinheiro
+          </button>
+          <button class="payment-btn" onclick="selectPayment(this,'cartao_debito')" data-pay="cartao_debito">
+            <span class="pay-icon">💳</span> Débito
+          </button>
+          <button class="payment-btn" onclick="selectPayment(this,'cartao_credito')" data-pay="cartao_credito">
+            <span class="pay-icon">💳</span> Crédito
+          </button>
+          <button class="payment-btn" onclick="selectPayment(this,'boleto')" data-pay="boleto" disabled style="opacity:.35;cursor:not-allowed;position:relative" title="Indisponível no momento">
+            <span class="pay-icon">📄</span> Boleto/Fatura
+            <span style="position:absolute;top:4px;right:6px;font-size:9px;background:#DC2626;color:#fff;border-radius:4px;padding:1px 5px;font-weight:800">INDISP.</span>
+          </button>
+          <button class="payment-btn" onclick="selectPayment(this,'prazo')" data-pay="prazo" disabled style="opacity:.35;cursor:not-allowed;position:relative" title="Indisponível no momento">
+            <span class="pay-icon">📅</span> A Prazo
+            <span style="position:absolute;top:4px;right:6px;font-size:9px;background:#DC2626;color:#fff;border-radius:4px;padding:1px 5px;font-weight:800">INDISP.</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Observações -->
+      <div class="checkout-section">
+        <div class="checkout-section-title">Observações</div>
+        <textarea class="form-input" id="checkoutObs" rows="2" placeholder="Instruções especiais, referência do endereço..." style="resize:vertical"></textarea>
+      </div>
+
+      <!-- Selecionar vendedor -->
+      <div class="checkout-section">
+        <div class="checkout-section-title">Selecionar Vendedor</div>
+        <div class="checkout-vend-grid">
+          <button class="checkout-vend-btn" data-nome="Alysson" data-numero="5583984816800" onclick="selectVendedor(this)">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+            Alysson
+          </button>
+          <button class="checkout-vend-btn" data-nome="Tobias" data-numero="5583980656370" onclick="selectVendedor(this)">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+            Tobias
+          </button>
+          <button class="checkout-vend-btn" data-nome="Edimar" data-numero="5583938320650" onclick="selectVendedor(this)">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+            Edimar
+          </button>
+          <button class="checkout-vend-btn" data-nome="Henrique" data-numero="5583999809763" onclick="selectVendedor(this)">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+            Henrique (Balcão)
+          </button>
+        </div>
+        <p class="vend-hint" id="vendHint">Toque no vendedor desejado para selecionar</p>
+      </div>
+      <!-- Botao Finalizar -->
+      <div class="checkout-section" style="padding-top:4px">
+        <button class="btn-finalizar" id="btnFinalizar" disabled onclick="sendCheckout()">
+          Finalizar Pedido no WhatsApp
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ÁREA DE IMPRESSÃO (invisível) -->
+<div id="printArea" style="display:none"></div>
+
+<!-- HEADER -->
+<header>
+  <button class="menu-toggle" id="menuToggle" aria-label="Menu">☰</button>
+  <a href="#" class="logo-wrap" id="logoWrap">
+    <svg viewBox="0 0 340 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="2" width="336" height="68" rx="10" stroke="white" stroke-width="3.5" fill="none"/>
+      <text x="170" y="44" font-family="'Arial Black','Arial',sans-serif" font-weight="900" font-size="36" fill="white" text-anchor="middle" letter-spacing="3">PATOENSE</text>
+      <text x="170" y="61" font-family="'Arial','sans-serif'" font-weight="400" font-size="10.5" fill="white" text-anchor="middle" letter-spacing="5">DISTRIBUIDORA DE BEBIDAS</text>
+    </svg>
+  </a>
+  <div class="v-divider"></div>
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="searchInput" placeholder="Buscar produto ou código..." autocomplete="off">
+  </div>
+  <div class="header-right">
+    <div class="prod-count">Total: <strong id="visibleCount">684</strong> produtos</div>
+    <!-- Botão admin: visível SOMENTE para quem fez login como admin -->
+    <button class="adm-btn" id="admHeaderBtn" onclick="openAdmPanel()" title="Painel Admin" style="display:none">
+      ⚙️ <span class="adm-label">Admin</span>
+      <span class="pending-badge" id="pendingBadge">0</span>
+    </button>
+    <!-- admLoginBtn removido: acesso via atalho secreto do teclado -->
+    <button class="user-btn" id="userHeaderBtn" onclick="openEdit()" title="Meu perfil">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <span class="user-label" id="userHeaderName">Minha Conta</span>
+    </button>
+    <button class="cart-btn" id="cartBtn" onclick="openCart()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+      <span class="cart-label">Carrinho</span>
+      <span class="cart-badge hidden" id="cartBadge">0</span>
+    </button>
+  </div>
+</header>
+
+<div class="overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<div class="cat-pills" id="catPills" style="display:none"></div>
+
+<div class="layout">
+  <aside id="sidebar">
+    <div class="sidebar-label">Categorias</div>
+    <button class="cat-btn active" data-cat="all" onclick="filterCat(this,'all')">
+      <span class="lbl">Todos os Produtos</span>
+      <span class="badge" id="totalBadge">684</span>
+    </button>
+  </aside>
+
+  <main>
+    <!-- PROFILE BAR -->
+    <div class="profile-bar" id="profileBar" style="display:none">
+      <div class="profile-bar-info">
+        <div class="profile-bar-name" id="pbName"></div>
+        <div class="profile-bar-doc" id="pbDoc"></div>
+      </div>
+      <div class="profile-bar-actions">
+        <button class="profile-edit-btn" onclick="openEdit()">✏️ Alterar cadastro</button>
+        <button class="profile-edit-btn" onclick="openEditDoc()">🪪 Alterar CPF/CNPJ</button>
+        <button class="profile-edit-btn" style="color:var(--red);border-color:#FECACA" onclick="doLogout()">Sair</button>
+      </div>
+    </div>
+
+    <!-- CARROSSEL DE PROMOÇÕES (visível para todos, editável pelo admin) -->
+    <div class="promo-carousel-wrap" id="promoWrap" style="display:none">
+      <div class="promo-carousel" id="promoCarousel"></div>
+      <button class="promo-nav prev" onclick="promoNav(-1)">‹</button>
+      <button class="promo-nav next" onclick="promoNav(1)">›</button>
+      <div class="promo-dots" id="promoDots"></div>
+    </div>
+
+    <!-- ADMIN PANEL (visível SOMENTE para admin) -->
+    <div class="admin-panel" id="adminPanel" style="display:none">
+      <div class="admin-panel-head">
+        <h2>⚙️ Painel Administrativo</h2>
+        <button class="modal-close" onclick="closeAdmPanel()" style="background:rgba(255,255,255,.1)">✕</button>
+      </div>
+      <div class="admin-panel-body">
+        <div class="admin-tabs">
+          <button class="admin-tab active" onclick="admTab(this,'admAddProd')">➕ Adicionar</button>
+          <button class="admin-tab" onclick="admTab(this,'admListProd')">📋 Produtos</button>
+          <button class="admin-tab admin-tab-promo" onclick="admTab(this,'admPromo')">🔥 Promoções</button>
+          <button class="admin-tab admin-tab-orders" onclick="admTab(this,'admOrders')">📦 Pedidos</button>
+          <button class="admin-tab" style="background:linear-gradient(90deg,#059669,#047857);border-color:#059669;color:#fff" id="pendingTabBtn" onclick="admTab(this,'admPending')">👥 Cadastros <span id="pendingTabCount" style="background:rgba(255,255,255,.25);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px">0</span></button>
+          <button class="admin-tab" style="background:linear-gradient(90deg,#0891b2,#0e7490);border-color:#0891b2;color:#fff" onclick="admTab(this,'admClientes')">🏪 Clientes</button>
+        </div>
+
+        <!-- ADD PRODUCT -->
+        <div class="admin-section active" id="admAddProd">
+          <div class="admin-form">
+            <div class="admin-row">
+              <div class="form-group" style="margin:0">
+                <label class="form-label">Código *</label>
+                <input class="form-input" id="admCode" type="number" placeholder="Ex: 9999">
+              </div>
+              <div class="form-group" style="margin:0">
+                <label class="form-label">Categoria *</label>
+                <select class="cat-select" id="admCat"></select>
+              </div>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label">Nome do produto *</label>
+              <input class="form-input" id="admName" type="text" placeholder="Ex: BRAHMA DUPLO MALTE 600ML">
+            </div>
+            <div class="form-group" style="margin:0">
+              <label class="form-label">Preço (R$) — opcional</label>
+              <input class="form-input" id="admPrice" type="number" step="0.01" placeholder="Ex: 12.50" style="max-width:180px">
+            </div>
+            <button class="btn-primary" style="max-width:240px" onclick="admAddProduct()">Adicionar produto</button>
+            <div class="alert-msg" id="admAddAlert"></div>
+          </div>
+        </div>
+
+        <!-- MANAGE PRODUCTS -->
+        <div class="admin-section" id="admListProd">
+          <input class="adm-search" id="admSearchInput" type="text" placeholder="🔍 Buscar produto por nome ou código...">
+          <div class="admin-products-list" id="admProductsList"></div>
+        </div>
+
+        <!-- PROMOÇÕES -->
+        <div class="admin-section" id="admPromo">
+          <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Selecione até <strong>5 produtos</strong> para o carrossel de promoções e defina o preço de destaque.</p>
+          <input class="adm-search" id="admPromoSearch" type="text" placeholder="🔍 Buscar produto para promoção...">
+          <div style="font-size:12px;color:var(--blue);font-weight:700;margin-bottom:10px" id="promoCount">0 / 5 selecionados</div>
+          <div class="promo-admin-grid" id="admPromoGrid"></div>
+        </div>
+
+        <!-- PEDIDOS -->
+        <div class="admin-section" id="admOrders">
+          <!-- Stats -->
+          <div class="orders-stats" id="ordersStats"></div>
+          <!-- Toolbar -->
+          <div class="orders-toolbar">
+            <div class="orders-filter-group" id="ordersFilterGroup">
+              <button class="orders-filter-btn active" data-filter="all" onclick="setOrderFilter('all',this)">Todos</button>
+              <button class="orders-filter-btn" data-filter="pending" onclick="setOrderFilter('pending',this)">⏳ Pendentes</button>
+              <button class="orders-filter-btn" data-filter="confirmed" onclick="setOrderFilter('confirmed',this)">✅ Confirmados</button>
+            </div>
+            <input class="orders-search" id="ordersSearchInput" type="text" placeholder="🔍 Buscar pedido, cliente..." oninput="renderAdmOrders()">
+            <button class="order-print-btn" onclick="printAllOrders()" style="white-space:nowrap;flex-shrink:0">
+              🖨️ Imprimir Todos
+            </button>
+          </div>
+          <!-- Tabela -->
+          <div class="orders-table-wrap">
+            <table class="orders-table" id="admOrdersTable">
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Cliente</th>
+                  <th>Data</th>
+                  <th style="text-align:center">Itens</th>
+                  <th>Valor</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="admOrdersList"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- CADASTROS PENDENTES -->
+        <div class="admin-section" id="admPending">
+          <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Aprove ou rejeite os cadastros de clientes que aguardam acesso à plataforma.</p>
+          <div class="pending-list" id="pendingUsersList"></div>
+        </div>
+
+        <!-- CLIENTES APROVADOS -->
+        <div class="admin-section" id="admClientes">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+            <p style="font-size:13px;color:var(--muted)">Todos os clientes aprovados na plataforma.</p>
+            <span id="clientesCount" style="font-size:12px;font-weight:700;color:var(--blue)"></span>
+          </div>
+          <input class="adm-search" id="clientesSearch" type="text" placeholder="🔍 Buscar cliente por nome, telefone ou documento...">
+          <div id="clientesList" style="display:flex;flex-direction:column;gap:10px;max-height:520px;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <div class="section-title" id="sectionTitle">TODOS OS PRODUTOS</div>
+      <div class="section-count" id="sectionCount">684 itens</div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </main>
+</div>
+
+<!-- CART DRAWER -->
+<div class="cart-overlay" id="cartOverlay" onclick="closeCart()"></div>
+<div class="cart-drawer" id="cartDrawer">
+  <div class="cart-head">
+    <div class="cart-head-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="22" height="22"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+      MEU CARRINHO
+    </div>
+    <button class="cart-close" onclick="closeCart()">✕</button>
+  </div>
+  <div class="cart-body" id="cartBody"></div>
+  <div class="cart-foot" id="cartFoot" style="display:none">
+    <div class="cart-meta">
+      <span id="cartCount">0 itens</span>
+      <strong id="cartLabel"></strong>
+    </div>
+    <button class="btn-primary" onclick="openCheckout()" style="margin-bottom:8px">
+      ✅ Finalizar Pedido
+    </button>
+    <button class="clear-btn" onclick="clearCart()">Limpar carrinho</button>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════
+   CONFIG
+══════════════════════════════════════════ */
+const IMG_BASE = './images/';
+
+/* ══════════════════════════════════════════
+   SEGURANÇA — HASH COM WEB CRYPTO API (SHA-256)
+   Substitui btoa() que é apenas base64, não criptografia
+══════════════════════════════════════════ */
+async function hashSenha(senha, tel) {
+  const salt = 'patoense2026:' + tel.replace(/\D/g,'') + ':v2';
+  const data = new TextEncoder().encode(salt + senha);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+/* ══════════════════════════════════════════
+   SEGURANÇA — RATE LIMITING DE LOGIN
+   Bloqueia tentativas excessivas de login
+══════════════════════════════════════════ */
+const _loginAttempts = {};
+function _checkRateLimit(key) {
+  const now = Date.now();
+  if (!_loginAttempts[key]) _loginAttempts[key] = { count: 0, firstAt: now, blockedUntil: 0 };
+  const entry = _loginAttempts[key];
+  if (now < entry.blockedUntil) {
+    const secs = Math.ceil((entry.blockedUntil - now) / 1000);
+    return { blocked: true, secs };
+  }
+  // Reset janela de 5 min
+  if (now - entry.firstAt > 5 * 60 * 1000) { entry.count = 0; entry.firstAt = now; }
+  entry.count++;
+  if (entry.count >= 6) {
+    entry.blockedUntil = now + 5 * 60 * 1000; // bloqueia 5 min
+    entry.count = 0;
+    return { blocked: true, secs: 300 };
+  }
+  return { blocked: false };
+}
+function _resetRateLimit(key) { delete _loginAttempts[key]; }
+
+/* ══════════════════════════════════════════
+   STORAGE HELPERS
+   localStorage = fallback local
+   Firebase = fonte principal para clientes e pedidos
+══════════════════════════════════════════ */
+function saveData(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+function loadData(key, def){ try{ const v=localStorage.getItem(key); return v?JSON.parse(v):def; }catch(e){ return def; } }
+
+// ── SALVAR CLIENTE APROVADO NO FIREBASE ──────────
+async function saveUserFirebase(user) {
+  try {
+    const fb = window._fb;
+    if (!fb) return;
+    const docId = user.tel.replace(/\D/g, '');
+    await fb.setDoc(fb.doc(fb.db, "clientes", docId), {
+      ...user,
+      updatedAt: fb.serverTimestamp()
+    }, { merge: true });
+    console.log('✅ Cliente salvo no Firebase');
+  } catch(e) {
+    console.warn('Firebase offline, cliente salvo apenas localmente:', e);
+  }
+}
+
+// ── SALVAR CADASTRO PENDENTE (aguardando aprovação) ──────────
+async function savePendingUserFirebase(user) {
+  try {
+    const fb = window._fb;
+    if (!fb) { console.warn('savePendingUserFirebase: window._fb não disponível'); return null; }
+    const docId = user.tel.replace(/\D/g, '');
+    await fb.setDoc(fb.doc(fb.db, "clientes_pendentes", docId), {
+      ...user,
+      status: 'pendente',
+      createdAt: Date.now(),
+      criadoEm: fb.serverTimestamp()
+    });
+    console.log('✅ Cadastro pendente salvo no Firebase, docId:', docId);
+    return docId;
+  } catch(e) {
+    console.error('❌ Erro ao salvar pendente no Firebase:', e.code, e.message);
+    return null;
+  }
+}
+
+// ── VERIFICAR SE CADASTRO JÁ FOI APROVADO ──────────
+async function checkUserApproved(tel) {
+  try {
+    const fb = window._fb;
+    if (!fb) return null;
+    const docId = tel.replace(/\D/g, '');
+    const snap = await fb.getDoc(fb.doc(fb.db, "clientes", docId));
+    if (snap.exists()) return snap.data();
+    return null;
+  } catch(e) { return null; }
+}
+
+// ── BUSCAR CLIENTE NO FIREBASE ──────────
+async function findUserFirebase(busca) {
+  try {
+    const fb = window._fb;
+    if (!fb) return null;
+    const digits = busca.replace(/\D/g, '');
+    if (digits.length >= 8) {
+      const snap = await fb.getDoc(fb.doc(fb.db, "clientes", digits));
+      if (snap.exists()) return snap.data();
+    }
+    // Busca por nome: varre todos os clientes aprovados
+    if (busca.length >= 3) {
+      const { getDocs, collection: col } = fb;
+      const allSnap = await getDocs ? getDocs(col(fb.db, "clientes")) : null;
+      if (allSnap) {
+        for (const d of allSnap.docs) {
+          const u = d.data();
+          if (u.nome && u.nome.toLowerCase().includes(busca)) return u;
+        }
+      }
+    }
+    return null;
+  } catch(e) {
+    console.warn('Erro ao buscar no Firebase:', e);
+    return null;
+  }
+}
+
+// ── SALVAR PEDIDO NO FIREBASE ───────────
+async function saveOrderFirebase(orderData) {
+  try {
+    const fb = window._fb;
+    if (!fb) return;
+    await fb.addDoc(fb.collection(fb.db, "pedidos"), {
+      ...orderData,
+      criadoEm: fb.serverTimestamp()
+    });
+    console.log('✅ Pedido salvo no Firebase');
+  } catch(e) {
+    console.warn('Firebase offline, pedido salvo apenas localmente:', e);
+  }
+}
+
+// ── CONFIRMAR PEDIDO NO FIREBASE ────────
+async function confirmOrderFirebase(docId) {
+  try {
+    const fb = window._fb;
+    if (!fb || !docId) return;
+    await fb.updateDoc(fb.doc(fb.db, "pedidos", docId), { confirmed: true });
+  } catch(e) {
+    console.warn('Erro ao confirmar no Firebase:', e);
+  }
+}
+
+/* ══════════════════════════════════════════
+   DADOS & PREÇOS
+══════════════════════════════════════════ */
+const DATA = {"CACHAÇAS":[{"code":2480,"name":"MATUTA CRISTAL 300ML"},{"code":884,"name":"MATUTA CRISTAL LATA 270ML"},{"code":244,"name":"MATUTA CRISTAL 1 LITRO"},{"code":2341,"name":"MATUTA UMBURANA 300ML"},{"code":1096,"name":"MATUTA UMBURANA 1 LITRO"},{"code":2290,"name":"MATUTA BALSAMO 300ML"},{"code":2289,"name":"MATUTA BALSAMO 1 LITRO"},{"code":2883,"name":"MATUATA ABELHA RAINHA 300ML"},{"code":2568,"name":"MATUTA ABELHA RAINHA 1 LITRO"},{"code":2292,"name":"MATUTA SINGLE BLEND 1 LITRO"},{"code":3992,"name":"MATUTA SINGLE BLEND 300ML"},{"code":2291,"name":"MATUTA BLACK BLEND 1 LITRO"},{"code":5821,"name":"MATUTA FIRE E FRESH 1L"},{"code":5822,"name":"MATUTA GREEN APPLE 1L"},{"code":5823,"name":"MATUTA FLOR DE BANANA 1L"},{"code":5824,"name":"MATUTA FIRE E FRESH 300ML"},{"code":5825,"name":"MATUTA GREEN APPLE 300ML"},{"code":5826,"name":"MATUTA FLOR DE BANANA 300ML"},{"code":3991,"name":"MATUTA BLACK BLEND 300ML"},{"code":2042,"name":"MATA LIMPA PRATA 350ML"},{"code":1973,"name":"MATA LIMPA PRATA 1 LITRO"},{"code":5561,"name":"MATA LIMPA PRATA 275ML"},{"code":1970,"name":"MATA LIMPA OURO 1 LITRO"},{"code":257,"name":"51 LATA"},{"code":260,"name":"51 LITRO"},{"code":61,"name":"51 OURO 1 LITRO"},{"code":259,"name":"51 LATÃO 473ML"},{"code":3906,"name":"51 269ML"},{"code":5220,"name":"51 OURO LATA 350ML"},{"code":251,"name":"PITU LATA 350ML"},{"code":256,"name":"PITU 1 LITRO"},{"code":695,"name":"PITU LIMÃO LATA 350ML"},{"code":4818,"name":"PITU MEL E LIMÃO LATA 350ML"},{"code":4968,"name":"PITU 600ML"},{"code":238,"name":"PITU SUP LATÃO"},{"code":253,"name":"PITU LATÃO 473ML"},{"code":4668,"name":"PITU AMARELINHA 350ML"},{"code":4667,"name":"PITU AMARELINHA 1 LITRO"},{"code":6049,"name":"PITU LIMAO 965ML"},{"code":6050,"name":"PITU MEL E LIMÃO 965ML"},{"code":6531,"name":"PITU CAJU 350ML"},{"code":3320,"name":"PITU GOLD 1 LITRO"},{"code":2674,"name":"AROMA DA SERRA 1 LITRO"},{"code":2840,"name":"AROMA DA SERRA 275ML"},{"code":1793,"name":"AROMA DA SERRA CARVALHO 1 LITRO"},{"code":1503,"name":"AROMA DA SERRA CARVALHO 250ML"},{"code":1792,"name":"AROMA DA SERRA UMBURANA 1 LITRO"},{"code":1507,"name":"AROMA DA SERRA UMBURANA 250ML"},{"code":3336,"name":"SERRA DE AREIA CRISTAL 275ML"},{"code":3338,"name":"SERRA DE AREIA CRISTAL 1 LITRO"},{"code":3339,"name":"SERRA DE AREIA OURO 1 LITRO"},{"code":3337,"name":"SERRA DE AREIA OURO 250ML"},{"code":3544,"name":"BOA DO BREJO CRISTAL 275ML"},{"code":4601,"name":"BOA DO BREJO CRISTAL 900 ML"},{"code":4603,"name":"BOA DO BREJO UMBURANA 900ML"},{"code":3545,"name":"BOA DO BREJO UMBURANA 250ML"},{"code":4604,"name":"BOA DO BREJO BALSAMO 250ML"},{"code":4607,"name":"BOA DO BREJO JEQUITIBÁ 250ML"},{"code":306,"name":"TRIUNFO CRISTAL 275ML"},{"code":4425,"name":"TRIUNFO CRISTAL 900ML"},{"code":1798,"name":"TRIUNFO BALSAMO 275ML"},{"code":1797,"name":"TRIUNFO UMBURANA 250ML"},{"code":5586,"name":"TRIUNFO UMBURANA 900ML"},{"code":3836,"name":"TRIUNFO PREMIUM 700ML"},{"code":2557,"name":"PREC DO VALE CRISTAL LATA 270ML"},{"code":2556,"name":"PREC DO VALE CRISTAL 1 LITRO"},{"code":2558,"name":"PREC DO VALE CRISTAL 250ML"},{"code":2559,"name":"PREC DO VALE CRISTAL 275ML"},{"code":2563,"name":"PREC DO VALE CARVALHO 1 LITRO"},{"code":2565,"name":"PREC DO VALE CARVALHO LATA 270ML"},{"code":2564,"name":"PREC DO VALE CARVALHO 250ML"},{"code":2560,"name":"PREC DO VALE UMBURANA 1 LITRO"},{"code":2562,"name":"PREC DO VALE UMBURANA LATA 270ML"},{"code":2561,"name":"PREC DO VALE UMBURANA 250ML"},{"code":3959,"name":"PREC DO VALE BALSAMO 1 LITRO"},{"code":3961,"name":"PREC DO VALE BALSAMO LATA 270ML"},{"code":3960,"name":"PREC DO VALE BALSAMO 250ML"},{"code":3407,"name":"PREC DO VALE MEL E LIMÃO 1 LITRO"},{"code":4120,"name":"PREC DO VALE MEL E LIMÃO LATA 270ML"},{"code":3408,"name":"PREC DO VALE MEL E LIMÃO 250ML"},{"code":3437,"name":"PREC DO VALE TROPICANA 1 LITRO"},{"code":4121,"name":"PREC DO VALE TROPICANA LATA 270ML"},{"code":5780,"name":"PRECIOSA DO VALE FRUTAS VERMELHAS 270ML"},{"code":5783,"name":"PRECIOSA DO VALE FRUTAS VERMELHAS 1L"},{"code":5779,"name":"PRECIOSA DO VALE FRUTAS VERMELHAS 250ML"},{"code":3438,"name":"PREC DO VALE TROPICANA 250ML"},{"code":2700,"name":"CACHACA DA BOA 480ML"},{"code":3060,"name":"CACHACA DA BOA 980ML"},{"code":6139,"name":"CACHACA DA BOA LATA 350 ML"},{"code":6140,"name":"CACHACA DA BOA OURO 480 ML"},{"code":3061,"name":"CACHACA DA BOA OURO 980ML"},{"code":6141,"name":"CACHACA DA BOA OURO LATA 350 ML"},{"code":2963,"name":"PRECIOSA DO VALE SPECIAL BLEND N1 1L"},{"code":2964,"name":"PRECIOSA DO VALE SPECIAL BLEND N1 250ML"},{"code":3962,"name":"PRECIOSA DO VALE SPECIAL BLEND N2 1L"},{"code":3963,"name":"PRECIOSA DO VALE SPECIAL BLEND N2 250ML"},{"code":1935,"name":"CARANGUEJO OURO 1 LITRO"},{"code":2120,"name":"CARANGUEJO OURO LATA 350ML"},{"code":887,"name":"CARANGUEJO CRISTAL 1 LITRO"},{"code":1428,"name":"CARANGUEJO CRISTAL LATA 350ML"},{"code":5862,"name":"CACH CARANGUEJO LIMAO LATA 350ML"},{"code":6244,"name":"CACH CARANGUEJO UMBURANA 980 ML"},{"code":2873,"name":"CARANGUEJO GOLD"},{"code":3308,"name":"YPIOCA OURO 1 LITRO"},{"code":2970,"name":"YPIOCA PRATA 1 LITRO"},{"code":4691,"name":"YPIOCA LIMAO 1 LITRO"},{"code":398,"name":"YPIOCA PRATA LATA 350ML"},{"code":78,"name":"YPIOCA OURO EMPALHADA 1L"},{"code":987,"name":"VELHO BARREIRO TRADICONAL 910ML"},{"code":3568,"name":"VELHO BARREIRO COMPOSTO 910ML"},{"code":888,"name":"GOSTOSA 480ML"},{"code":818,"name":"TUBARÃO 480ML"},{"code":1124,"name":"SERRA LIMPA 355ML"},{"code":4315,"name":"RAINHA 350ML"},{"code":2531,"name":"RAINHA 600ML"},{"code":33,"name":"VOLUPIA CRISTAL 670ML"},{"code":87,"name":"VOLUPIA CRISTAL 275ML"},{"code":329,"name":"CACH SÃO PAULO 355ML"},{"code":915,"name":"CACH JUREMINHA CRISTAL 900ML"},{"code":130,"name":"CACH JUREMINHA 1000ML REDONDO"},{"code":45,"name":"CACH JUREMINHA UMBURANA LITRO"},{"code":124,"name":"CACH JUREMINHA CRISTAL 275ML"},{"code":2152,"name":"CACH JUREMINHA UMBURANA LN 275ML"}],"CERVEJAS":[{"code":3537,"name":"BRAHMA 600ML"},{"code":902,"name":"BRAHMA 300ML"},{"code":11,"name":"BRAHMA LATA 350ML"},{"code":1936,"name":"BRAHMA 0,0% 350ML LATA"},{"code":1965,"name":"BRAHMA DUPLO MALTE 600ML"},{"code":1968,"name":"BRAHMA DUPLO MALTE 350ML LATA"},{"code":56,"name":"BRAHMA 1 LITRO"},{"code":25,"name":"SKOL 600ML"},{"code":802,"name":"SKOL 300ML"},{"code":43,"name":"SKOL LATA 350ML"},{"code":40,"name":"SKOL 1 LITRO"},{"code":335,"name":"ORIGINAL 600ML"},{"code":2031,"name":"ORIGINAL 300ML"},{"code":1918,"name":"ORIGINAL LATA 350ML"},{"code":362,"name":"BOHEMIA 600ML"},{"code":1049,"name":"BOHEMIA 300ML"},{"code":162,"name":"BOHEMIA 350ML LATA"},{"code":535,"name":"BOHEMIA 1 LITRO"},{"code":2818,"name":"BUDWEISER 600ML"},{"code":4018,"name":"BUDWEISER 1 LITRO"},{"code":100,"name":"BUDWEISER 350ML LATA"},{"code":4484,"name":"BUDWIESER 0,0% 350ML LATA"},{"code":1885,"name":"BUDWEISER 330ML LONG NECK"},{"code":4473,"name":"BUDWEISER 0,0% 330ML LONG NECK"},{"code":5119,"name":"BUDWEISER 473ML"},{"code":1581,"name":"BUDWEISER 269ML"},{"code":3355,"name":"SPATEN 600ML"},{"code":4904,"name":"SPATEN 350ML LATA"},{"code":5937,"name":"STELLA PURE GOLD LATA 350ML"},{"code":4941,"name":"STELLA PURE GOLD 330ML LONG NECK"},{"code":3776,"name":"SPATEN 355ML LONG NECK"},{"code":3313,"name":"STELLA 600ML"},{"code":3418,"name":"STELLA 350ML LATA"},{"code":3152,"name":"STELLA 330ML LONG NECK"},{"code":821,"name":"CORONA 330ML LONG NECK"},{"code":5118,"name":"CORONA LATA 350ML"},{"code":1916,"name":"CORONITA 210ML LONG NECK"},{"code":2063,"name":"STELLA LATA 269ML"},{"code":356,"name":"ANT BOA 600ML"},{"code":95,"name":"ANTARTICA BOA 350ML LATA"},{"code":490,"name":"SUB ZERO 350ML LATA"},{"code":2000,"name":"BECKS 335ML LONG NECK"},{"code":498,"name":"BEATS SENSE 269ML LATA"},{"code":3521,"name":"BEATS SENSE LONG NECK"},{"code":3244,"name":"BEATS GT LONG NECK"},{"code":2043,"name":"BEATS GT 269ML LATA"},{"code":5073,"name":"BEATS TROPICAL 269ML LATA"},{"code":5198,"name":"BEATS TROPICAL LONG NECK"},{"code":4784,"name":"BEATS CAIPIRINHA LONG NECK"},{"code":4151,"name":"BEATS CAIPIRINHA 269ML LATA"},{"code":3464,"name":"MICHELOB ULTRA 330ML LN"},{"code":3683,"name":"ITAIPAVA 600ML"},{"code":1374,"name":"ITAIPAVA 300ML"},{"code":389,"name":"ITAIPAVA LATA 350ML"},{"code":3227,"name":"ITAIPAVA 100% MALTE 600ML"},{"code":403,"name":"ITAIPAVA 1 LITRO"},{"code":354,"name":"ITAIPAVA 269ML LATA"},{"code":3904,"name":"ITAIPAVA 0,0% ALCOOL 350ML"},{"code":3612,"name":"ITAIPAVA  330ML LONG NECK"},{"code":3595,"name":"ITAIPAVA 100% MALTA 350ML LATA"},{"code":1536,"name":"PETRA 600ML"},{"code":3771,"name":"PETRA 300ML"},{"code":4249,"name":"PETRA 269ML LATA"},{"code":3771,"name":"PETRA 330ML LONG NECK"},{"code":1929,"name":"PETRA 350ML LATA"},{"code":822,"name":"CRYSTAL LATA 350ML"},{"code":1964,"name":"CRYSTAL LATÃO 473ML"},{"code":1025,"name":"LOKAL LATA 350ML"},{"code":1967,"name":"LOKAL LATÃO 473ML"},{"code":2049,"name":"CABARÉ ICE LIMÃO 275ML LN"},{"code":3287,"name":"CABARÉ ICE LT 269ML"},{"code":3289,"name":"CABARÉ ICE FRU VERMELHAS 275ML LN"},{"code":3288,"name":"CABARÉ ICE FRU AMARELAS  275ML LN"},{"code":3416,"name":"CABARÉ ICE TANGERINA 275ML LN"},{"code":1779,"name":"HEINEKEN 600ML"},{"code":5031,"name":"HEINEKEN LATA 350ML"},{"code":5143,"name":"HEINEKEN 350ML LATA 0,0%"},{"code":1714,"name":"HEINEKEN 330ML LONG NECK"},{"code":2822,"name":"HEINEKEN 330ML 0,0% LONG NECK"},{"code":2897,"name":"AMSTEL 600ML"},{"code":6390,"name":"AMSTEL 300ML"},{"code":3202,"name":"AMSTEL 350ML LATA"},{"code":2398,"name":"DEVASSA 350ML LATA"},{"code":277,"name":"DEVASSA 300ML"},{"code":2368,"name":"CERV SCHIN PILSEN 350ML"},{"code":5432,"name":"IMPERIO PILSEN 600ML"},{"code":2192,"name":"IMPERIO PILSEN 350ML LATA"},{"code":5434,"name":"IMPERIO PILSEN 355ML LN"},{"code":5440,"name":"IMPERIO PILSEN 300ML RET"},{"code":5439,"name":"IMPERIO PILSEN 300ML DESC"},{"code":2451,"name":"IMPERIO LAGER 600ML"},{"code":2625,"name":"IMPERIO LAGER 350ML LATA"},{"code":2676,"name":"IMPERIO GOLD 210ML LN"},{"code":2243,"name":"IMPERIO LAGER 275ML"},{"code":5444,"name":"IMPERIO LAGER 355ML LN"},{"code":2449,"name":"IMPERIO LAGER 600ML DESC"},{"code":5435,"name":"IMPERIO ULTRA 275ML"},{"code":345,"name":"SMIRNOFF ICE RED 275ML"}],"REFRIGERANTES":[{"code":81,"name":"GUARANÁ ANT 1 LITRO"},{"code":5074,"name":"GUARANA ANT 1 LITRO ZERO"},{"code":5225,"name":"GUARANA ANT MULTI PACK C/2 1 LITRO"},{"code":85,"name":"GUARANA ANT 2 LITRO"},{"code":583,"name":"GUARANA ANT 2,5 LITRO"},{"code":5,"name":"GUARANA ANT LATA 350ML"},{"code":8,"name":"GUARANA ANT LATA ZERO 350ML"},{"code":79,"name":"GUARANA ANT 600ML"},{"code":1734,"name":"GUARANA ANT CASS 200ML"},{"code":4364,"name":"GUARANA ANT CASS ZERO 200ML"},{"code":64,"name":"GUARANA ANT 1L LS"},{"code":157,"name":"GUARANA ANT ZERO 2 LITRO"},{"code":111,"name":"PEPSI COLA 1 LITRO"},{"code":116,"name":"PEPSI COLA 2 LITRO"},{"code":984,"name":"PEPSI COLA 2,5L"},{"code":641,"name":"PEPSI COLA 1L LS"},{"code":4206,"name":"PEPSI BLACK 1 LITRO"},{"code":3243,"name":"PEPSI BLACK 2 LITRO"},{"code":3165,"name":"PEPSI BLACK LATA 350ML"},{"code":1711,"name":"PEPSI COLA 200ML"},{"code":4659,"name":"PEPSI BLACK 200ML"},{"code":110,"name":"PEPSI COLA LATA 350ML"},{"code":106,"name":"SUKITA ANT 2 LITRO"},{"code":101,"name":"SUKITA ANT 1 LITRO"},{"code":99,"name":"SUKITA ANT LATA 350ML"},{"code":1653,"name":"SUKITA ANT 200ML"},{"code":2685,"name":"SUKITA ANT UVA 2 LITROS"},{"code":3653,"name":"SUKITA LIMÃO 2 LITRO"},{"code":96,"name":"SODA ANT 2 LITROS"},{"code":94,"name":"SODA ANT 1 LITRO"},{"code":502,"name":"SODA ANT 200ML"},{"code":89,"name":"SODA ANT 350ML LATA"},{"code":1799,"name":"REFRI IT COLA 2 LITROS"},{"code":247,"name":"REFRI IT GUARANÁ 2 LITROS"},{"code":656,"name":"REFRI IT SODA 2 LITROS"},{"code":2077,"name":"REFRI IT LIMÃO ICE 2 LITROS"},{"code":1800,"name":"REFRI IT LARANJA 2 LITROS"},{"code":44,"name":"COCA COLA LATA 350ML"},{"code":159,"name":"COCA COLA LATA ZERO 350ML"},{"code":63,"name":"COCA COLA 1 LITRO"},{"code":163,"name":"COCA COLA ZERO 1 LITRO"},{"code":65,"name":"COCA COLA 2 LITROS"},{"code":164,"name":"COCA COLA ZERO 2 LITROS"},{"code":3082,"name":"COCA COLA 2,5 LITROS"},{"code":4897,"name":"COCA COLA CASS 250ML"},{"code":4622,"name":"COCA COLA 500ML"},{"code":66,"name":"COCA COLA 290ML KS"},{"code":4910,"name":"COCA COLA 290ML ZERO AÇUCAR KS"},{"code":70,"name":"COCA COLA LS 1L"},{"code":1524,"name":"COCA COLA 2 LITROS RET"},{"code":132,"name":"FANTA LATA 350ML"},{"code":147,"name":"FANTA UVA LATA 350ML"},{"code":139,"name":"FANTA LARANJA 2 LITROS"},{"code":1692,"name":"FANTA UVA 2 LITROS"},{"code":1870,"name":"FANTA 1 L LS"},{"code":138,"name":"FANTA 1 LITRO"},{"code":368,"name":"SPRITE LATA 350ML"},{"code":5503,"name":"SPRITE 1 LITRO"},{"code":493,"name":"SPRITE 2 LITROS"},{"code":1746,"name":"SCHWEPPS CITRUS LATA 350ML"},{"code":2796,"name":"SCHWEPPS TONICA 350ML"},{"code":3379,"name":"SCHWEPPS CITRUS 1,5L"},{"code":819,"name":"CAJUINA 1L"},{"code":873,"name":"CAJUINA CASS 200ML"},{"code":872,"name":"CAJUINA 2 LITROS"},{"code":2127,"name":"CAJUINA 600ML RET"},{"code":6513,"name":"CAJUINA SAO GERALDO ZERO ACUCAR LATA 350ML"},{"code":5530,"name":"CAJUINA 350ML LATA"},{"code":161,"name":"H2O"}],"DESTILADOS":[{"code":58,"name":"SMIRNOFF 600ML"},{"code":3757,"name":"SMIRNOFF 1,750ML"},{"code":2701,"name":"SMIRNOFF 998ML"},{"code":93,"name":"ORLOFF 1L"},{"code":1557,"name":"ORLOFF 600ML"},{"code":3583,"name":"ORLOFF 1,750ML"},{"code":3520,"name":"NATASHA 900ML"},{"code":3031,"name":"SKYY TRAD 1 L"},{"code":1776,"name":"ABSOLUT 1L"},{"code":1098,"name":"ABSOLUT 750ML"},{"code":269,"name":"ABSOLUT APEACH 750ML"},{"code":272,"name":"ABSOLUT CITRON 750ML"},{"code":496,"name":"ABSOLUT EXTRAKT 750ML"},{"code":1764,"name":"ABSOLUT MANGO 750ML"},{"code":1737,"name":"ABSOLUT VANILLA 750ML"},{"code":136,"name":"GREY GOOSE 750ML"},{"code":1221,"name":"NORDOFF 1L"},{"code":326,"name":"SLOVA TRAD 1L"},{"code":1063,"name":"NINNOF BIG APPLE 900ML"},{"code":4946,"name":"NINNOF BLUE 960ML"},{"code":4448,"name":"NINNOF GREEN 960ML"},{"code":1502,"name":"NINNOF LEMONN 900ML"},{"code":1529,"name":"NINNOF PINK LEMONADE 900ML"},{"code":1235,"name":"NINNOF RED 900ML"},{"code":1531,"name":"NINNOF YELLOW 900ML"},{"code":1533,"name":"NINNOF MOJITO 900ML"},{"code":271,"name":"NINNOF SEX THE BEACH 900ML"},{"code":219,"name":"RAJSKA 1L"},{"code":239,"name":"RAJSKA APPLE 1L"},{"code":1020,"name":"PALOFF 1L"},{"code":554,"name":"CIROC 750ML"},{"code":2746,"name":"VOD FRA CIROC RED BERRY 750ML"},{"code":3272,"name":"VALOFF 1L"},{"code":607,"name":"POLAK 1L"},{"code":1257,"name":"BOMBAY SAPPHIRE 750ML"},{"code":1928,"name":"LARIOS 700ML"},{"code":2774,"name":"TANQUERAY 750ML"},{"code":49,"name":"DUBAR 900ML"},{"code":3528,"name":"GINTUDO 1L"},{"code":294,"name":"GIN ROCK STRAMBERRY 1LT"},{"code":2972,"name":"GIN ROCK SUNSET 1 LT"},{"code":42,"name":"ROCK 995ML"},{"code":57,"name":"SEAGERS 980ML"},{"code":2314,"name":"BEEFEATER 750ML"},{"code":4631,"name":"GIN INTECION VD 900ML"},{"code":4632,"name":"GIN INTECION VD 900ML SABORES"},{"code":5117,"name":"GIN NAC NINNOFF 900ML"},{"code":513,"name":"BACARDI BIG APPLE 980ML"},{"code":630,"name":"BACARDI BIG PINEAPPLE 750ML"},{"code":766,"name":"BACARDI CARTA BLANCA 980ML"},{"code":1181,"name":"BACARDI CARTA OURO 980ML"},{"code":1383,"name":"BACARDI MOJITO 980ML"},{"code":1445,"name":"MALIBU COCONUT 750ML"},{"code":3811,"name":"MONTILLA LIMAO 1L"},{"code":344,"name":"MONTILLA CARTA CRISTAL 1L"},{"code":422,"name":"MONTILA CARTA BRANCA 1L"},{"code":525,"name":"MONTILLA CARTA OURO 1L"},{"code":5516,"name":"BALLANTINES FINEST SHAWNA 750ML"},{"code":224,"name":"BALLANTINES 12 ANOS 1L"},{"code":946,"name":"BALLANTINES 12 ANOS 750ML"},{"code":218,"name":"BALLANTINES FINEST 8 ANOS 1L"},{"code":2927,"name":"BALLANTINES FINE 8 ANOS 750ML"},{"code":427,"name":"JACK DANIELS 1L"},{"code":2706,"name":"JACK DANIELS HONEY 1L"},{"code":4658,"name":"JACK DANIELS APPLE 1L"},{"code":2597,"name":"JACK DANIELS FIRE 1L"},{"code":2627,"name":"BLACK WHITE 700ML"},{"code":295,"name":"BLACK WHITE 1L"},{"code":625,"name":"BUCHANANS 12 ANOS 1L"},{"code":2666,"name":"CHIVAS REGAL 12 ANOS 750ML"},{"code":252,"name":"CHIVAS REGAL 12 ANOS 1L"},{"code":3798,"name":"DEWAR'S 12 ANOS 1L"},{"code":3714,"name":"FAMOUS GROUSE 1L"},{"code":419,"name":"GRANTS 1L"},{"code":5364,"name":"JOHNNIE WALKR GLD RES 750 ML"},{"code":338,"name":"JOHNNIE WALKR RED LABL 750ML"},{"code":1828,"name":"JOHNNIE WALKER RED LABEL 1L"},{"code":1604,"name":"JOHNIE WALKR DOUBLE BLCK 1L"},{"code":3432,"name":"JOHNNIE WALKR BLCK 12 750ML"},{"code":3432,"name":"JOHNNIE WALKR BLACK 12 1L"},{"code":2846,"name":"OLD PARR 12 ANOS 750ML"},{"code":2893,"name":"OLD PARR 12 ANOS 1L"},{"code":2817,"name":"WHITE HORSE 500ML"},{"code":211,"name":"WHITE HORSE 1L"},{"code":712,"name":"WILLIAM LAWSONS 1L"},{"code":530,"name":"BLACK STONE 1L"},{"code":123,"name":"CHANCELER 1L"},{"code":230,"name":"OLD EIGHT 1L"},{"code":451,"name":"PASSPORT 1L"},{"code":214,"name":"TEACHERS 12 ANOS 750ML"},{"code":5054,"name":"CAMPARI 998ML"},{"code":5344,"name":"CAMPARI 748ML"},{"code":3129,"name":"MARTINI ROSATO"},{"code":4184,"name":"MARTINI BIANCO"},{"code":893,"name":"APEROL"},{"code":266,"name":"DREHER"},{"code":1702,"name":"DRUNKS"},{"code":1002,"name":"IMPERIAL"},{"code":774,"name":"PARATUDO"},{"code":7,"name":"DOMECQ"},{"code":4735,"name":"PRESIDENTE 900ML"},{"code":842,"name":"CYNAR"},{"code":264,"name":"SAO JOAO DA BARRA"},{"code":4215,"name":"GUARACY RAIZES AMARGAS 900ML"},{"code":2930,"name":"LICOR 43 QUARENTA  TRES"},{"code":624,"name":"COINTREAU 750ML"},{"code":6333,"name":"- BALLENA LICOR MORANGO 750ML"},{"code":38,"name":"LICOR AMARULA GRF 750ML"},{"code":466,"name":"CATUABA GUARACY 900ML"},{"code":74,"name":"JOSE CUERVO PRATA SILVER"},{"code":2775,"name":"JOSE CUERVO REPOUSADA"},{"code":2844,"name":"TEQPAR 1L"},{"code":4450,"name":"TEQUILERO PRATA 750ML"},{"code":4003,"name":"TEQUILERO OURO 750ML"},{"code":4449,"name":"KIT TEQUILERO C 2 COPOS OURO 750ML"},{"code":3713,"name":"KIT TEQUILERO C 2 COPOS PRATA 750ML"},{"code":4526,"name":"TEQUILERO MORANGO C AGAVE 750ML"}],"PIPOCAS  OUTROS":[{"code":746,"name":"BATATA SCRUSCH CHURRASCO 40G"},{"code":1930,"name":"BATATA PALHA SCRUCH 80G"},{"code":3480,"name":"REIZINHO 50G"},{"code":3482,"name":"REIZINHO 40G"},{"code":3481,"name":"REIZINHO 30G"},{"code":3659,"name":"REIZINHO NACHO 50G"},{"code":3613,"name":"BATATA PALHA REI DE OURO TRADICIONAL 80G"},{"code":6588,"name":"SALG REIZINHO CEBOLA 27G"},{"code":6589,"name":"SALG REIZINHO CHURRASCO 27G"},{"code":6590,"name":"SALG REIZINHO QUEIJO 27G"},{"code":6648,"name":"SALG. REIZINHO PRESUNTO 27G"},{"code":6649,"name":"SALG. REIZINHO BACON 27G"},{"code":6591,"name":"SALG REIZINHO REQUEIJAO 27G"},{"code":2364,"name":"KIQUEIJO 80G"},{"code":3532,"name":"KIGALINHA 80G"},{"code":2526,"name":"BATATA  ROAST CEBOLA 50G"},{"code":2624,"name":"BATATA  ROAST CHURRASCO 50G"},{"code":2527,"name":"BATATA  ROAST TRADICIONAL 50G"},{"code":5543,"name":"BAT ROAST GOURMET PEITO PERU 50G"},{"code":5967,"name":"BAT ROAST GOURMET QUEIJOS FINOS 50G"},{"code":5968,"name":"BAT ROAST GOURMET COST C/LIMÃO 50G"},{"code":6061,"name":"KIONDA GALINHA 70G"},{"code":4567,"name":"KIONDA CEBOLA 70G"},{"code":4338,"name":"TORRESMINHO BACON 55G"},{"code":5969,"name":"TORRESMINHO COST/ C/LIMÃO 55G"},{"code":6231,"name":"TORRESMINHO PIMENTA 55G"},{"code":5493,"name":"CHEETOS 21G"},{"code":5330,"name":"DORITOS NACHO 75G"},{"code":3435,"name":"DORITOS NACHO 32G"},{"code":5363,"name":"CHEETOS LUA 35G"},{"code":5328,"name":"CHEETOS REQUEIJAO 40G"},{"code":4017,"name":"AMENDOIM S.HELENA"},{"code":2026,"name":"NISSIN LAMEN NOSSO SABOR CARNE"},{"code":1541,"name":"NISSIN LAMEN NOSSO SABOR GALINHA"},{"code":6466,"name":"BISC CLUB SOCIAL CEBOLA 141G PCT"},{"code":6569,"name":"BISC CLUB SOCIAL ORIGINAL 6X24G"},{"code":4504,"name":"MIX DE AMENDOIM BANDEJA 250G"}],"VINHOS E ESPUMANTES":[{"code":1280,"name":"SAN MARINO"},{"code":1451,"name":"PINHEIRENSE"},{"code":1703,"name":"PADRE CICERO"},{"code":1376,"name":"VH NAC QTA MORGADO TTO SUAVE 1LT"},{"code":470,"name":"QTA MORGADO SUAVE 750ML"},{"code":675,"name":"QTA MORGADO BORD SUAV 750ML"},{"code":469,"name":"QTA MORGADO TTO SECO 750ML"},{"code":1066,"name":"QTA MORGADO BCO SECO 750ML"},{"code":1479,"name":"QTA MORGADO ROSE 750ML"},{"code":1281,"name":"QTA MORGADO BRANC 750ML"},{"code":671,"name":"QTA BORDO SECO 750ML"},{"code":542,"name":"QTA BORDO SUAVE 1L"},{"code":2098,"name":"PERGOLA BORDO 1L"},{"code":357,"name":"VH RESERVADO CABERNET SAUV 750ML"},{"code":361,"name":"VH RESERVADO CARMENERE 750ML"},{"code":232,"name":"VH SANTA HELENA RESERVADO CABERNET 750ML"},{"code":843,"name":"VH SANTA HELENA RDO MERLOT TTO 750ML"},{"code":979,"name":"VH SANTA HELENA RDO CARMENERE TTO 750ML"},{"code":2833,"name":"VH SANTA HELENA RESERVADO ROSE 750ML"},{"code":1942,"name":"VH CASAL GARCIA ROSE VH VERD 750ML"},{"code":1501,"name":"VH CASAL GARCIA SWEET BCO 750ML"},{"code":2153,"name":"VH CASAL GARCIA SWEET RED TTO 750ML"},{"code":1166,"name":"VH CASAL GARCIA TTO 750 ML"},{"code":5116,"name":"VH CASAL GARCIA SWEET ROSE 750ML"},{"code":3912,"name":"VH POR CASAL GARCIA BCO 750 ML"},{"code":261,"name":"VH DOM BOSCO 750ML"},{"code":1276,"name":"VH DOM BOSCO TTO SECO 750ML"},{"code":1985,"name":"VH DOM BOSCO BRANCO SECO 750ML"},{"code":4887,"name":"VH DOM BOSCO BORDO TINTO SUAVE 1L"},{"code":1988,"name":"VH DOM BOSCO BORDO TTO SUAVE 750ML"},{"code":2682,"name":"VH COUNTRY WINE BORDO SUAVE C 750ML"},{"code":4865,"name":"VH COUNTRY WINE ROSE SUAVE 750ML"},{"code":742,"name":"VH COUNTRY WINE BRANCO SECO 750ML"},{"code":174,"name":"VH COUNTRY WINE TINTO SUAVE 750ML"},{"code":390,"name":"VH SANGUE DE BOI 750ML"},{"code":3242,"name":"VH SANGUE DE BOI SECO 750ML"},{"code":357,"name":"VH CHI RESERVADO CABERNET SAUV 750ML"},{"code":2027,"name":"VH CHI RESERVADO MALBEC"},{"code":60,"name":"VH MARCUS JAMES CAB SUAV TTO 750ML"},{"code":168,"name":"VH COUNTRY WINE TINTO SECO 750ML"},{"code":4562,"name":"ESPUM AURORA BRUT"},{"code":4563,"name":"ESPUM AURORA BRUT ROSE"},{"code":4564,"name":"ESPUM AURORA MOSCATEL"},{"code":2354,"name":"ESPUM AURORA MOSCATEL ROSE"},{"code":1504,"name":"CASA PERINI DEMI SEC 750ML"},{"code":107,"name":"CASA PERINI BRUT 750ML"},{"code":1685,"name":"CASA PERINE BRUT ROSE 750ML"},{"code":2925,"name":"CASA PERINI AQUARELA 750ML"},{"code":1505,"name":"CASA PERINI MOSCATEL 750ML"},{"code":51,"name":"CHANDON BRUT ROSE"},{"code":784,"name":"CHANDON PASSION"},{"code":2835,"name":"TERRANOVA BRUT"},{"code":2119,"name":"TERRANOVA DEMI-SECO"},{"code":844,"name":"TERRANOVA MOSCATEL"},{"code":2001,"name":"TERRANOVA BRUT ROSE"},{"code":1605,"name":"QTA MORG MOSCATEL"},{"code":668,"name":"QTA MORG MOSCATEL ROSE"},{"code":3155,"name":"CHUVA DE PRATA SEM ALCOOL"},{"code":90,"name":"PRESTIGE"},{"code":76,"name":"CERESER MAÇÃ TRAD"},{"code":1084,"name":"CELEBRATE 660ML"}],"SUCOS ENERGETICOSAGUASCIGARROS":[{"code":3584,"name":"TAMPICO LARANJA 330ML"},{"code":6377,"name":"TAMPICO FRUTAS CITRICAS 1500ML"},{"code":1067,"name":"TAMPICO LARANJA 2 LITRO"},{"code":2513,"name":"CITRUS LARANJA 1,5 LITRO"},{"code":696,"name":"CITRUS LARANJA 330ML"},{"code":1198,"name":"SUCO ISIS LARANJA 350ML"},{"code":1128,"name":"SUCO ISIS LARANJA 1 LITRO"},{"code":1646,"name":"SUCO SKINKA FRUTAS CITRICAS 450ML"},{"code":1795,"name":"DEL VALE FSH LARANJA 1,5L"},{"code":4647,"name":"DEL VALE UVA PET 1L"},{"code":2684,"name":"DEL VALE LARANJA 450ML"},{"code":854,"name":"SUCO DEL VALE FRUT UVA 450ML"},{"code":1108,"name":"SUCO ALEGRIA LARANJA 2LT"},{"code":2778,"name":"SUCO ALEGRIA LARANJA 1,5L"},{"code":693,"name":"RED BULL 355ML"},{"code":235,"name":"RED BULL 473ML"},{"code":275,"name":"RED BULL 250ML"},{"code":1330,"name":"RED BULL 250ML ZERO AÇUCAR"},{"code":2111,"name":"ENERG BLADE 2L"},{"code":6380,"name":"BLADE ENERGY MELANCIA 2000ML"},{"code":6381,"name":"BLADE ENERGY TROPICAL 2000ML"},{"code":3275,"name":"MORMAII 1L"},{"code":4878,"name":"NIGHT POWER BLACK 2L"},{"code":7062,"name":"NIGHT POWER TRADICIONAL 473ML"},{"code":7061,"name":"NIGHT POWER ZERO 473ML"},{"code":83,"name":"NIGHT POWER LATA 269ML"},{"code":202,"name":"ENERG TNT LATA 269ML"},{"code":4236,"name":"FUSION 1 LITRO"},{"code":4906,"name":"FUSION 2 LITRO"},{"code":6971,"name":"AGUA MINERAL S GAS COPO 200ML INDAIA"},{"code":5845,"name":"AGUA MINERAL INDAIA C/GÁS 1,5L"},{"code":169,"name":"AGUA MINERAL INDAIA 1,5L"},{"code":146,"name":"AGUA MINERAL INDAIA 500ML"},{"code":4803,"name":"AGUA STERBOM 500ML"},{"code":4841,"name":"AGUA STERBOM 1,5L"},{"code":5562,"name":"AGUA PETROPOLIS 500ML"},{"code":5376,"name":"AGUA PETROPOLIS 1,5L"},{"code":53,"name":"AGUA TÔNICA ANT LATA 350ML"},{"code":2093,"name":"AGUA MINERAL INDAIA C/GÁS 500ML"},{"code":1516,"name":"ROTHMANS AZUL"},{"code":1911,"name":"ROTHMANS VERMELHO"},{"code":1654,"name":"ROTHMANS INTER"},{"code":2074,"name":"HOLLYWOOD ORIGINAL"},{"code":881,"name":"DUNHILL CARLTON"},{"code":1991,"name":"LUCKY STRIKE DOUBLE"},{"code":1127,"name":"DUNHILL ON RED"}],"BOMBONIERE E OUTROS":[{"code":4380,"name":"TRIDENT GARRAFA MENTA 54GR"},{"code":3702,"name":"TRIDENT GARRAFA MELANCIA MENTA 54GR"},{"code":663,"name":"MENTOS PURE FRESH 3 FRESH MINT"},{"code":665,"name":"MENTOS PURE FRESH 3 SPEARMINT VERDE 8,5G"},{"code":2479,"name":"MENTOS PURE FRESH 3 FRUIT 8,5G"},{"code":669,"name":"MENTOS STICK MINT 38G"},{"code":2815,"name":"MENTOS STICK RAINBOW SORTIDO 38G"},{"code":2816,"name":"MENTOS STICK MORG IOG 38G"},{"code":1337,"name":"MENTOS STICK FRUTAS/VERM 38G"},{"code":6134,"name":"RCL BALA FREEGELLS MIX DE AZUL 475G"},{"code":6135,"name":"RCL BALA FREEGELLS MORANGO 475G"},{"code":2225,"name":"BATON GAROTO"},{"code":1939,"name":"CHOC LOLLO 25G"},{"code":4713,"name":"CHOC CROCANTE GAROTO 25G"},{"code":4433,"name":"SNICKERS TRADICIONAL 45G"},{"code":6720,"name":"SNICKERS CHOC DP DUPLO 42G"},{"code":6651,"name":"SNICKERS DP BRANCO 42G"},{"code":6723,"name":"SNICKERS CHO PE DE MOLEQUE 42G"},{"code":4247,"name":"SNICKERS DARK 42G"},{"code":6724,"name":"SNICKERS DP MORANGO 42G"},{"code":6725,"name":"SNICKERS DP MARACUJA 42G"},{"code":441,"name":"OURO BRANCO C/50"},{"code":3705,"name":"BOMBOM SERENATA"},{"code":4492,"name":"CHICLE PLUTONITA ABRACO CONG 180G"},{"code":4048,"name":"CHICLE PLUTONITA BABA BRUXA 180G"},{"code":4489,"name":"CHICLE PLUTONITA LINGUA ACIDO 180G"},{"code":4289,"name":"PELOTA BIG BIG  50UND"},{"code":5354,"name":"PELOTA POP 50UN"},{"code":7168,"name":"PIRULITO FLORESTAL POP KISS CEREJA 500G"},{"code":6192,"name":"PIRULITO CHERRY POP ENERGY"},{"code":3140,"name":"CAIXA DE BOMBOM LACTA"},{"code":2999,"name":"CAIXA DE BOMBOM GAROTO"},{"code":929,"name":"CHARGE CHOCOLATE 40G CX C/30"},{"code":894,"name":"CHOKITO CHOCOLATE 32G CX C/30"},{"code":920,"name":"PRESTIGIO CHOCOLATE 33G"},{"code":2663,"name":"SONHO DE VALSA C/50"},{"code":6881,"name":"KITKAT AO LEITE COM 4 41,5G PACK"},{"code":906,"name":"KIT KAT AO LEITE 41,5G"},{"code":2353,"name":"KINDER JOY ROSA"},{"code":5662,"name":"BALA ERLAN FRAMBOESA 500G"},{"code":5664,"name":"BALA ERLAN GUTY MIX 500G"},{"code":5663,"name":"BALA ERLAN GUTY MORANGO 500G"},{"code":6655,"name":"BALA ERLAN MASTIGAVEL MINTFRESH 500G"},{"code":5025,"name":"CAIXA DE BOMBOM NESTLE"},{"code":5855,"name":"BALA EMBARE CARAMELO IOG.SORT"},{"code":5854,"name":"BALA EMBARE CARAMELO LEITE"},{"code":5853,"name":"BALA EMBARE CARAMELO LEITE CHOC"},{"code":6137,"name":"ARCOR CHICLE PLUTONITA ZUMBISS 337GR"},{"code":5253,"name":"ARCOR CHICLE BIG BIG HORTELA 315GR"},{"code":5254,"name":"ARCOR CHICLE BIG BIG MORANGO 315GR"},{"code":534,"name":"BALA YOGURTE DORI 100 MORANGO 600G"},{"code":2066,"name":"MMS TUBE 30G"},{"code":1172,"name":"NUTELLA 140G"},{"code":1277,"name":"ARCOR CHICLE BIG BIG UVA 315G"},{"code":891,"name":"COPO NADIR AMERICANO C/24"},{"code":3460,"name":"COPO DESCART 400ML"},{"code":2757,"name":"COPO DESCART MARATA 300ML"},{"code":2756,"name":"COPO DESCART CRISTALCOPO 250 ML"},{"code":4155,"name":"COPO DESCART 200ML"},{"code":4302,"name":"COPO DESCART 180ML"},{"code":445,"name":"COPO DESCART TOTALPLAST 150ML"},{"code":2755,"name":"COPO DESCART 150ML"},{"code":4157,"name":"COPO DESCART 80ML"},{"code":6482,"name":"GUARDANAPO DIAMANTE 20X18 CM 40 FLS"},{"code":2094,"name":"CARVÃO PADRE CICERO SACO PAPELÃO 3KG"},{"code":4309,"name":"LEITE CONDENSADO ITALAC 395G C/27"},{"code":2683,"name":"OLEO SOJA SOYA PET"},{"code":3137,"name":"LEITE INTEGRAL BETANIA 1L C/12"},{"code":3277,"name":"CREME DE LEITE ITALAC 200G C/24"},{"code":210,"name":"ITALAKINHO C/24"},{"code":411,"name":"TODDYNHO C/27"},{"code":3631,"name":"NESCAU 180ML"},{"code":2957,"name":"ISQUEIRO BIC CT C/12"},{"code":5022,"name":"PORTA LATA KNAUF ISOPOR 350ML"},{"code":6354,"name":"DET LIQ ATOL LIMAO 500ML"},{"code":6355,"name":"DET LIQ ATOL MACA 500ML"},{"code":2037,"name":"FINI AMORAS 15G"},{"code":2038,"name":"FINI BANANAS 15G"},{"code":2123,"name":"FINI BEIJO DE MORANGO 15G"},{"code":2039,"name":"FINI DENTADURAS 15G"},{"code":5762,"name":"FINI MONO DENTADURAS DA BRUXA 15G"},{"code":3436,"name":"FINI MONO MINHOCAS BRILHO 15G"},{"code":4270,"name":"FINI MONO MINHOCAS CITRICAS 15G"},{"code":2728,"name":"FINI MONO TUBES MORANGO 15G"},{"code":3479,"name":"FINI MONO TUBES MORANGO C LARANJA 15G"},{"code":2909,"name":"FINI MONO TUBES TRES CORES 15GR"},{"code":2908,"name":"FINI MONO TUBES TUTTI FRUTTI 15GR"},{"code":4217,"name":"FINI MONO TUBES UVA CITRICO 15GR"},{"code":4446,"name":"FINI MONO URSINHOS 15G"},{"code":971,"name":"FINI TUBES MORANGO CITR 17G"},{"code":1611,"name":"FINI TUBES PINTA LINGUA 17G"},{"code":234,"name":"FINI TUBES TWISTER 17G"},{"code":1588,"name":"FINI TUBES UVA 17GR"},{"code":3250,"name":"FINI SUPER MORANGO CITRICO 27G"},{"code":1872,"name":"FINI SUPER TWISTER 27G"},{"code":3390,"name":"FINI AMORAS 80G"},{"code":1841,"name":"FINI BEIJOS DE MORANGO 80G"},{"code":1842,"name":"FINI BANANAS 80G"},{"code":4143,"name":"FINI BURGUERS 80G"},{"code":1840,"name":"FINI DENTADURAS 80G"},{"code":2731,"name":"FINI MARSH TORCAO 80G"},{"code":2809,"name":"FINI MINHOCAS CITRICA 90G"},{"code":6360,"name":"FINI OCEANITOS 80G"},{"code":1838,"name":"FINI TUBES MORANGO CITRICO 80G"},{"code":3260,"name":"FINI TUBES TUTTI FRUTTI 80G"},{"code":3871,"name":"DNL PAPERMINT GOMA MASC ZERO HORTELA"},{"code":3590,"name":"DNL PAPERMINT GOMA MASCAR ZERO MOR"},{"code":5599,"name":"DIP LOKO BOOM BEIJOS MORANGO 11G"},{"code":5600,"name":"DIP LOKO BOOM PINTA LINGUA MOR 11G"},{"code":5412,"name":"DIP LOKO BOOOM ALGODAO DOCE 11G"},{"code":4999,"name":"DIP LOKO BOOOM CEREJA LIKE 11G"},{"code":5000,"name":"DIP LOKO BOOOM FOGO LIKE 11G"},{"code":5001,"name":"DIP LOKO BOOOM GELO LIKE 11G"},{"code":5002,"name":"DIP LOKO BOOOM LICHIA LIKE 11G"},{"code":5003,"name":"DIP LOKO BOOOM MACA VERDE LIKE 11G"},{"code":6021,"name":"DNL DIP LOKO BOOM PINTA LINGUA BLU 11G"},{"code":6022,"name":"DNL DIP LOKO BOOM PRINCESA MORANGO 11G"},{"code":2382,"name":"DNL DIP LOKO NEON ALIEN 10GR"},{"code":3591,"name":"DNL DIP LOKO NEON CABECA ABOBORA"},{"code":1704,"name":"DNL DIP LOKO NEON ENERGY   COLA"},{"code":1705,"name":"DNL DIP LOKO NEON ENERGY CITRUS 10G"},{"code":3589,"name":"DNL DIP LOKO NEON FRUTAS SORTIDAS"},{"code":3588,"name":"DNL DIP LOKO NEON MONSTERS CAVEIRA"},{"code":6136,"name":"DNL DIP LOKO NEON MONSTERS CAVEIRA 10G"},{"code":2384,"name":"DNL DIP LOKO NEON MONSTERS PATINHA 10G"},{"code":5167,"name":"PIRULITO CATAVENTO CORACAO 12G"},{"code":6926,"name":"CATAVENTO DNL CONFEITO FRUTINHA CATAVENTO 7G"},{"code":5209,"name":"PIRULITO CATAVENTO ESTRELA 12G"},{"code":5165,"name":"VOA LOKO NEON 10G"},{"code":6705,"name":"BALA GOMA DOCILE TUBO SORT 30GR"},{"code":6400,"name":"BALA GOMA DOCILE TUBO GURT 30G"},{"code":3728,"name":"AGUA SANITARIA TUBARÃO  1LT"},{"code":6547,"name":"AGUA SANITARIA CLORITO 1L"}]};
+
+// Carrega preços salvos pelo admin (sobrescreve DATA em runtime)
+let PRICES = loadData('patoense_prices', {});
+// Produtos desabilitados (temporariamente em falta)
+let DISABLED = loadData('patoense_disabled', {});
+// Pedidos salvos — sempre sincronizados com window.ORDERS
+window.ORDERS = loadData('patoense_orders', []);
+let ORDERS = window.ORDERS;
+// Função chamada pelo listener Firebase para sincronizar
+window._syncOrders = function(newOrders){
+  window.ORDERS = newOrders;
+  ORDERS = window.ORDERS;
+  // Salva localmente como cache
+  try{ localStorage.setItem('patoense_orders', JSON.stringify(newOrders.slice(0,50))); }catch(e){}
+  // Badge de novos pedidos no header
+  const newCount = newOrders.filter(o=>!o.confirmed).length;
+  let badge = document.getElementById('ordersBadge');
+  if(!badge){
+    const admBtn = document.getElementById('admHeaderBtn');
+    if(admBtn){
+      badge = document.createElement('span');
+      badge.id = 'ordersBadge';
+      badge.style.cssText = 'position:absolute;top:-7px;left:-7px;background:#EF4444;color:#fff;font-size:10px;font-weight:900;min-width:18px;height:18px;border-radius:9px;padding:0 4px;display:none;align-items:center;justify-content:center;border:2px solid var(--blue)';
+      admBtn.appendChild(badge);
+    }
+  }
+  if(badge){ badge.textContent=newCount; badge.style.display=newCount>0?'flex':'none'; }
+};
+// Promoções
+let PROMOS = loadData('patoense_promos', []);
+
+/* ══════════════════════════════════════════
+   USUÁRIO
+══════════════════════════════════════════ */
+let currentUser = loadData('patoense_user', null);
+let docType = 'CPF';
+let editDocType = 'CPF';
+
+function showRegister(){ document.getElementById('authWelcome').style.display='none'; document.getElementById('authLogin').style.display='none'; document.getElementById('authRegister').style.display='block'; document.getElementById('authModalTitle').textContent='Criar Conta'; }
+function showLogin(){ document.getElementById('authWelcome').style.display='none'; document.getElementById('authRegister').style.display='none'; document.getElementById('authLogin').style.display='block'; document.getElementById('authModalTitle').textContent='Entrar'; }
+function showWelcome(){ document.getElementById('authRegister').style.display='none'; document.getElementById('authLogin').style.display='none'; document.getElementById('authWelcome').style.display='block'; document.getElementById('authModalTitle').textContent='Bem-vindo!'; }
+
+function maskDoc(inp){
+  let v=inp.value.replace(/\D/g,'');
+  if(docType==='CPF'){
+    v=v.slice(0,11);
+    if(v.length>9) v=v.replace(/(\d{3})(\d{3})(\d{3})(\d{1,2})/,'$1.$2.$3-$4');
+    else if(v.length>6) v=v.replace(/(\d{3})(\d{3})(\d{1,3})/,'$1.$2.$3');
+    else if(v.length>3) v=v.replace(/(\d{3})(\d{1,3})/,'$1.$2');
+  } else {
+    v=v.slice(0,14);
+    if(v.length>12) v=v.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{1,2})/,'$1.$2.$3/$4-$5');
+    else if(v.length>8) v=v.replace(/(\d{2})(\d{3})(\d{3})(\d{1,4})/,'$1.$2.$3/$4');
+    else if(v.length>5) v=v.replace(/(\d{2})(\d{3})(\d{1,3})/,'$1.$2.$3');
+    else if(v.length>2) v=v.replace(/(\d{2})(\d{1,3})/,'$1.$2');
+  }
+  inp.value=v;
+}
+function validarCPF(cpf){
+  cpf=cpf.replace(/\D/g,'');
+  if(cpf.length!==11||/^(\d)\1+$/.test(cpf)) return false;
+  let s=0;
+  for(let i=0;i<9;i++) s+=parseInt(cpf[i])*(10-i);
+  let r=11-(s%11); if(r>=10) r=0;
+  if(r!==parseInt(cpf[9])) return false;
+  s=0;
+  for(let i=0;i<10;i++) s+=parseInt(cpf[i])*(11-i);
+  r=11-(s%11); if(r>=10) r=0;
+  return r===parseInt(cpf[10]);
+}
+function validarCNPJ(cnpj){
+  cnpj=cnpj.replace(/\D/g,'');
+  if(cnpj.length!==14||/^(\d)\1+$/.test(cnpj)) return false;
+  const calc=(c,n)=>{let s=0,p=n-7;for(let i=0;i<n;i++){s+=parseInt(c[i])*(p<2?2:p);p--;}const r=s%11;return r<2?0:11-r;};
+  return calc(cnpj,12)===parseInt(cnpj[12])&&calc(cnpj,13)===parseInt(cnpj[13]);
+}
+function setDocType(t){ docType=t; document.getElementById('togCPF').classList.toggle('active',t==='CPF'); document.getElementById('togCNPJ').classList.toggle('active',t==='CNPJ'); const inp=document.getElementById('regDoc'); inp.placeholder=t==='CPF'?'000.000.000-00':'00.000.000/0001-00'; inp.maxLength=t==='CPF'?14:18; inp.value=''; }
+function setEditDocType(t){ editDocType=t; document.getElementById('editTogCPF').classList.toggle('active',t==='CPF'); document.getElementById('editTogCNPJ').classList.toggle('active',t==='CNPJ'); const inp=document.getElementById('editDoc'); inp.placeholder=t==='CPF'?'000.000.000-00':'00.000.000/0001-00'; inp.maxLength=t==='CPF'?14:18; }
+
+async function doRegister(){
+  const nome=document.getElementById('regNome').value.trim();
+  const tel=document.getElementById('regTel').value.trim();
+  const doc=document.getElementById('regDoc').value.trim();
+  const senha=document.getElementById('regSenha').value;
+  const senha2=document.getElementById('regSenha2').value;
+  let ok=true;
+  if(!nome){document.getElementById('errNome').classList.add('show');ok=false;}else{document.getElementById('errNome').classList.remove('show');}
+  if(!tel){document.getElementById('errTel').classList.add('show');ok=false;}else{document.getElementById('errTel').classList.remove('show');}
+  if(!doc){
+    document.getElementById('errDoc').textContent='Informe o documento';
+    document.getElementById('errDoc').classList.add('show');ok=false;
+  } else {
+    const docValido=docType==='CPF'?validarCPF(doc):validarCNPJ(doc);
+    if(!docValido){
+      document.getElementById('errDoc').textContent=docType==='CPF'?'CPF inválido. Verifique o número.':'CNPJ inválido. Verifique o número.';
+      document.getElementById('errDoc').classList.add('show');ok=false;
+    } else { document.getElementById('errDoc').classList.remove('show'); }
+  }
+  if(!senha||senha.length<6){document.getElementById('errSenha').classList.add('show');ok=false;}else{document.getElementById('errSenha').classList.remove('show');}
+  if(senha!==senha2){document.getElementById('errSenha2').classList.add('show');ok=false;}else{document.getElementById('errSenha2').classList.remove('show');}
+  if(!ok) return;
+
+  // Hash seguro com Web Crypto API (SHA-256)
+  const senhaHash = await hashSenha(senha, tel);
+
+  const newUser={nome,tel,email:document.getElementById('regEmail').value.trim(),docTipo:docType,doc,endereco:document.getElementById('regEndereco').value.trim(),cidade:document.getElementById('regCidade').value.trim(),uf:document.getElementById('regUF').value.trim(),senhaHash};
+
+  // Primeiro verifica se já está aprovado
+  const btn = document.querySelector('#authRegister .btn-primary');
+  if(btn){btn.textContent='⏳ Verificando...';btn.disabled=true;}
+  const already = await checkUserApproved(tel);
+  if(already){
+    // Já aprovado — valida senha com SHA-256
+    if(already.senhaHash){
+      const hashNovo = await hashSenha(senha, tel);
+      // Suporte retroativo ao hash btoa antigo
+      let senhaOk = (hashNovo === already.senhaHash);
+      if (!senhaOk) { try { senhaOk = btoa('pat2026:'+senha+':'+tel.replace(/\D/g,'')) === already.senhaHash; } catch(e){} }
+      if(!senhaOk){
+        if(btn){btn.textContent='Criar conta e acessar';btn.disabled=false;}
+        document.getElementById('errSenha').textContent='Senha incorreta para este cadastro';
+        document.getElementById('errSenha').classList.add('show');
+        return;
+      }
+    }
+    currentUser = already;
+    saveData('patoense_user', currentUser);
+    if(btn){btn.textContent='Criar conta e acessar';btn.disabled=false;}
+    closeAuth(); applyUserUI();
+    return;
+  }
+
+  // Aguarda Firebase estar disponível (máx 8s) antes de tentar salvar
+  await new Promise(resolve => {
+    let t = 0;
+    const check = setInterval(() => {
+      t += 100;
+      if (window._fb || t >= 8000) { clearInterval(check); resolve(); }
+    }, 100);
+  });
+
+  // Salva como pendente no Firebase (tenta, mas não bloqueia se falhar)
+  const savedId = await savePendingUserFirebase(newUser);
+
+  // Salva localmente para mostrar tela de espera independente do Firebase
+  saveData('patoense_pending', newUser);
+  if(btn){btn.textContent='Criar conta e acessar';btn.disabled=false;}
+
+  if (!savedId) {
+    // Firebase falhou — salva localmente e avisa o admin via WhatsApp
+    console.warn('Firebase indisponível — cadastro salvo apenas localmente');
+  }
+
+  showWaitingApproval(newUser.nome);
+}
+async function doLogin(){
+  const busca=document.getElementById('loginBusca').value.trim().toLowerCase();
+  const senha=document.getElementById('loginSenha').value;
+  const errEl=document.getElementById('errLogin');
+  errEl.textContent='Cadastro não encontrado ou senha incorreta';
+  const btn = document.querySelector('#authLogin .btn-primary');
+
+  // Rate limiting por identificador digitado
+  const rlKey = 'login:' + busca.slice(0, 20);
+  const rl = _checkRateLimit(rlKey);
+  if (rl.blocked) {
+    errEl.textContent = `Muitas tentativas. Tente novamente em ${rl.secs}s.`;
+    errEl.classList.add('show'); return;
+  }
+
+  if(btn){btn.textContent='⏳ Buscando...';btn.disabled=true;}
+
+  async function checkSenha(user){
+    if(!user.senhaHash) return false; // sem hash: requer recadastro
+    const tel = (user.tel||'').replace(/\D/g,'');
+    // Suporta hash legado (btoa) e novo (SHA-256)
+    const hashNovo = await hashSenha(senha, tel);
+    if (hashNovo === user.senhaHash) return true;
+    // Compatibilidade retroativa com hash btoa antigo
+    try { const hashAntigo = btoa('pat2026:'+senha+':'+tel); if(hashAntigo === user.senhaHash) return true; } catch(e){}
+    return false;
+  }
+
+  // 1. Tenta no Firebase (aprovados)
+  const fbUser = await findUserFirebase(busca);
+  if(fbUser){
+    if(!await checkSenha(fbUser)){
+      if(btn){btn.textContent='Entrar';btn.disabled=false;}
+      errEl.textContent='Senha incorreta. Tente novamente.';
+      errEl.classList.add('show'); return;
+    }
+    _resetRateLimit(rlKey);
+    currentUser=fbUser; saveData('patoense_user',currentUser);
+    if(btn){btn.textContent='Entrar';btn.disabled=false;}
+    closeAuth(); applyUserUI(); return;
+  }
+  // 2. Verifica se está pendente
+  const digits = busca.replace(/\D/g,'');
+  if(digits.length>=8){
+    try{
+      const fb=window._fb;
+      if(fb){
+        const snap=await fb.getDoc(fb.doc(fb.db,"clientes_pendentes",digits));
+        if(snap.exists()){
+          const pUser=snap.data();
+          if(btn){btn.textContent='Entrar';btn.disabled=false;}
+          showWaitingApproval(pUser.nome||busca);
+          return;
+        }
+      }
+    }catch(e){}
+  }
+  // 3. Sem fallback por localStorage — exige validação no servidor
+  if(btn){btn.textContent='Entrar';btn.disabled=false;}
+  document.getElementById('errLogin').classList.add('show');
+}
+function closeAuth(){ document.getElementById('authModal').classList.remove('open'); }
+
+function showWaitingApproval(nome){
+  // Fecha modal de auth e mostra tela de espera
+  document.getElementById('authModal').classList.remove('open');
+  const overlay = document.getElementById('waitingModal');
+  if(overlay){
+    document.getElementById('waitingUserName').textContent = nome || 'seu cadastro';
+    overlay.classList.add('open');
+  }
+}
+function closeWaiting(){ document.getElementById('waitingModal').classList.remove('open'); }
+function applyUserUI(){
+  if(!currentUser) return;
+  document.getElementById('profileBar').style.display='flex';
+  document.getElementById('pbName').textContent='👤 '+currentUser.nome;
+  document.getElementById('pbDoc').textContent=(currentUser.docTipo||'DOC')+': '+(currentUser.doc||'—');
+  document.getElementById('userHeaderName').textContent=currentUser.nome.split(' ')[0];
+  // Botão de login admin removido — acesso via atalho secreto
+  // Mostrar carrossel de promoções
+  renderPromoCarousel();
+}
+
+function doLogout(){
+  if(!confirm('Sair da conta?')) return;
+  window._logout?.();
+  currentUser = null;
+  isAdm = false;
+  saveData('patoense_user', null);
+  document.getElementById('profileBar').style.display='none';
+  document.getElementById('userHeaderName').textContent='Minha Conta';
+  document.getElementById('admHeaderBtn').style.display='none';
+  if(document.getElementById('adminPanel')) document.getElementById('adminPanel').style.display='none';
+  showWelcome();
+  document.getElementById('authModal').classList.add('open');
+}
+
+
+function openEdit(){ if(!currentUser) return; document.getElementById('editNome').value=currentUser.nome||''; document.getElementById('editTel').value=currentUser.tel||''; document.getElementById('editEmail').value=currentUser.email||''; document.getElementById('editDoc').value=currentUser.doc||''; document.getElementById('editEndereco').value=currentUser.endereco||''; document.getElementById('editCidade').value=currentUser.cidade||''; document.getElementById('editUF').value=currentUser.uf||''; editDocType=currentUser.docTipo||'CPF'; setEditDocType(editDocType); document.getElementById('editModal').classList.add('open'); }
+function openEditDoc(){ openEdit(); setTimeout(()=>{ document.getElementById('editDoc').focus(); document.getElementById('editDoc').select(); },300); }
+function closeEdit(){ document.getElementById('editModal').classList.remove('open'); }
+async function saveEdit(){ currentUser.nome=document.getElementById('editNome').value.trim()||currentUser.nome; currentUser.tel=document.getElementById('editTel').value.trim()||currentUser.tel; currentUser.email=document.getElementById('editEmail').value.trim(); currentUser.docTipo=editDocType; currentUser.doc=document.getElementById('editDoc').value.trim()||currentUser.doc; currentUser.endereco=document.getElementById('editEndereco').value.trim(); currentUser.cidade=document.getElementById('editCidade').value.trim(); currentUser.uf=document.getElementById('editUF').value.trim(); saveData('patoense_user',currentUser);
+// 🔥 Atualiza no Firebase
+await saveUserFirebase(currentUser);
+applyUserUI(); closeEdit(); }
+
+/* ══════════════════════════════════════════
+   ADMIN
+══════════════════════════════════════════ */
+let isAdm = false;
+
+function openAdmLogin(){ document.getElementById('admLoginModal').classList.add('open'); document.getElementById('admEmail').value=''; document.getElementById('admPass').value=''; document.getElementById('errAdmPass').classList.remove('show'); setTimeout(()=>document.getElementById('admEmail').focus(),120); }
+function closeAdmLogin(){ document.getElementById('admLoginModal').classList.remove('open'); }
+async function doAdmLogin(){
+  const email = document.getElementById('admEmail').value.trim();
+  const pass = document.getElementById('admPass').value;
+  const errEl = document.getElementById('errAdmPass');
+  const btn = document.querySelector('#admLoginModal .btn-primary');
+  errEl.classList.remove('show');
+  if(!email || !pass){ errEl.classList.add('show'); return; }
+
+  // Rate limiting para login admin
+  const rlKey = 'adm:' + email.slice(0, 30);
+  const rl = _checkRateLimit(rlKey);
+  if (rl.blocked) {
+    errEl.textContent = `Muitas tentativas. Aguarde ${rl.secs}s.`;
+    errEl.classList.add('show'); return;
+  }
+
+  if(btn){ btn.textContent='⏳ Entrando...'; btn.disabled=true; }
+  try {
+    await window._loginAdmin(email, pass);
+    _resetRateLimit(rlKey);
+    isAdm = true;
+    closeAdmLogin();
+    closeAuth();
+    if(!currentUser){
+      currentUser = { nome: 'Administrador', tel: '0000000000', doc: '000.000.000-00', docTipo: 'CPF', endereco: '', cidade: 'Patos', uf: 'PB', isAdmin: true };
+      saveData('patoense_user', currentUser);
+      applyUserUI();
+    }
+    document.getElementById('admHeaderBtn').style.display='flex';
+    openAdmPanel();
+  } catch(e) {
+    errEl.textContent = 'E-mail ou senha incorretos.';
+    errEl.classList.add('show');
+    document.getElementById('admPass').value='';
+    document.getElementById('admPass').focus();
+  } finally {
+    if(btn){ btn.textContent='Acessar painel'; btn.disabled=false; }
+  }
+}
+
+// ── ATALHO SECRETO: digite "adm" em qualquer lugar da página ──
+(function(){
+  const SEQ = 'adm';
+  let buf = '';
+  let timer = null;
+  document.addEventListener('keydown', function(e){
+    // Ignora se o foco estiver em inputs/textareas
+    const tag = document.activeElement.tagName;
+    if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    buf += e.key.toLowerCase();
+    if(buf.length > SEQ.length) buf = buf.slice(-SEQ.length);
+    clearTimeout(timer);
+    timer = setTimeout(()=>{ buf=''; }, 1500);
+    if(buf === SEQ){
+      buf='';
+      clearTimeout(timer);
+      openAdmLogin();
+    }
+  });
+})();
+function openAdmPanel(){ document.getElementById('adminPanel').style.display='block'; document.getElementById('adminPanel').scrollIntoView({behavior:'smooth',block:'start'}); buildAdmCatSelect(); renderAdmList(''); renderAdmPromo(''); renderAdmOrders(); renderPendingUsers(); loadClientes(); }
+function closeAdmPanel(){ document.getElementById('adminPanel').style.display='none'; }
+
+function admTab(btn,sec){
+  document.querySelectorAll('.admin-tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.admin-section').forEach(s=>s.classList.remove('active'));
+  document.getElementById(sec).classList.add('active');
+  if(sec==='admListProd') renderAdmList('');
+  if(sec==='admPromo') renderAdmPromo('');
+  if(sec==='admOrders') renderAdmOrders();
+  if(sec==='admPending') renderPendingUsers();
+  if(sec==='admClientes') renderClientesList('');
+}
+
+/* ══════════════════════════════════════════
+   CLIENTES APROVADOS
+══════════════════════════════════════════ */
+window.ALL_CLIENTES = [];
+
+async function loadClientes(){
+  try{
+    const fb = window._fb;
+    if(!fb) return;
+    const snap = await fb.getDocs(fb.collection(fb.db, 'clientes'));
+    window.ALL_CLIENTES = [];
+    snap.forEach(d => window.ALL_CLIENTES.push({_docId: d.id, ...d.data()}));
+    window.ALL_CLIENTES.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
+    renderClientesList(document.getElementById('clientesSearch')?.value||'');
+  }catch(e){ console.warn('Erro ao carregar clientes:', e); }
+}
+
+function renderClientesList(q){
+  const list = document.getElementById('clientesList');
+  const countEl = document.getElementById('clientesCount');
+  if(!list) return;
+  let arr = window.ALL_CLIENTES || [];
+  if(q && q.trim()){
+    const s = q.trim().toLowerCase();
+    arr = arr.filter(u =>
+      (u.nome||'').toLowerCase().includes(s) ||
+      (u.tel||'').includes(s) ||
+      (u.doc||'').replace(/\D/g,'').includes(s.replace(/\D/g,'')) ||
+      (u.email||'').toLowerCase().includes(s)
+    );
+  }
+  if(countEl) countEl.textContent = arr.length + ' cliente(s) encontrado(s)';
+  if(!arr.length){
+    list.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Nenhum cliente encontrado.<br><small>Clique em "🏪 Clientes" para recarregar.</small></div>';
+    return;
+  }
+  list.innerHTML = '';
+  arr.forEach(u => {
+    const dt = u.approvedAt ? new Date(u.approvedAt.seconds ? u.approvedAt.seconds*1000 : u.approvedAt).toLocaleDateString('pt-BR') : (u.createdAt ? new Date(u.createdAt).toLocaleDateString('pt-BR') : '—');
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1.5px solid var(--border);border-radius:12px;padding:14px 16px;background:#fff;display:flex;flex-direction:column;gap:6px';
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span style="font-weight:800;font-size:14px;color:var(--blue)">👤 ${u.nome||'—'}</span>
+        <span style="font-size:10px;background:#D1FAE5;color:#065F46;padding:3px 10px;border-radius:20px;font-weight:700">✅ APROVADO</span>
+      </div>
+      <div style="font-size:12px;color:var(--text);display:grid;grid-template-columns:1fr 1fr;gap:4px 16px">
+        <span>📞 <strong>Tel:</strong> ${u.tel||'—'}</span>
+        <span>🪪 <strong>${u.docTipo||'DOC'}:</strong> ${u.doc||'—'}</span>
+        ${u.email?`<span>✉️ <strong>Email:</strong> ${u.email}</span>`:''}
+        ${u.cidade?`<span>📍 ${u.endereco?u.endereco+' — ':''}${u.cidade}${u.uf?' / '+u.uf:''}</span>`:''}
+        <span style="color:var(--muted)">📅 Desde: ${dt}</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button data-tel="${(u.tel||'').replace(/\D/g,'')}" class="cliente-whatsapp-btn" style="background:#25D366;color:#fff;border:none;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer">📲 WhatsApp</button>
+        <button data-docid="${u._docId||''}" data-nome="${(u.nome||'').replace(/"/g,'')}" class="cliente-remove-btn" style="background:#FEE2E2;color:#DC2626;border:1px solid #FCA5A5;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer">🗑 Remover</button>
+      </div>`;
+    card.querySelector('.cliente-whatsapp-btn').addEventListener('click', function(){
+      const tel = this.dataset.tel;
+      if(tel) window.open('https://wa.me/55'+tel,'_blank');
+    });
+    card.querySelector('.cliente-remove-btn').addEventListener('click', async function(){
+      const docId = this.dataset.docid;
+      const nome = this.dataset.nome;
+      if(!confirm('Remover o cliente '+nome+' da plataforma? Ele precisará se recadastrar.')) return;
+      try{
+        const fb = window._fb;
+        if(fb && docId) await fb.deleteDoc(fb.doc(fb.db,'clientes',docId));
+        window.ALL_CLIENTES = window.ALL_CLIENTES.filter(x=>x._docId!==docId);
+        renderClientesList(document.getElementById('clientesSearch')?.value||'');
+      }catch(e){ alert('Erro ao remover: '+e.message); }
+    });
+    list.appendChild(card);
+  });
+}
+
+document.addEventListener('input', function(e){
+  if(e.target.id==='clientesSearch') renderClientesList(e.target.value);
+});
+
+/* ══════════════════════════════════════════
+   CADASTROS PENDENTES — APROVAÇÃO
+══════════════════════════════════════════ */
+window.PENDING_USERS = [];
+
+function renderPendingUsers(){
+  const list = document.getElementById('pendingUsersList');
+  const cnt = document.getElementById('pendingTabCount');
+  const badge = document.getElementById('pendingBadge');
+  const n = window.PENDING_USERS.length;
+
+  // Atualiza badge no header
+  if(badge){ badge.textContent = n; badge.style.display = n>0?'flex':'none'; }
+  // Atualiza contador na aba
+  if(cnt) cnt.textContent = n;
+
+  if(!list) return;
+  if(!n){
+    list.innerHTML='<div class="no-pending">✅ Nenhum cadastro aguardando aprovação.</div>';
+    return;
+  }
+  list.innerHTML = window.PENDING_USERS.map((u) => {
+    const dt = u.createdAt ? new Date(u.createdAt).toLocaleString('pt-BR') : '—';
+    const safeDocId = (u._docId||u.tel||'').replace(/\D/g,'');
+    const safeName = (u.nome||'').replace(/'/g,"\\'");
+    return `<div class="pending-card">
+      <div class="pending-card-head">
+        <span class="pending-card-name">👤 ${u.nome||'—'}</span>
+        <span class="pending-card-ts">${dt}</span>
+      </div>
+      <div class="pending-card-body">
+        <div>📞 <strong>Tel:</strong> ${u.tel||'—'}</div>
+        <div>🪪 <strong>${u.docTipo||'DOC'}:</strong> ${u.doc||'—'}</div>
+        ${u.email?`<div>✉️ <strong>E-mail:</strong> ${u.email}</div>`:''}
+        ${u.cidade?`<div>📍 ${u.endereco?u.endereco+' — ':''}${u.cidade}${u.uf?' / '+u.uf:''}</div>`:''}
+        <div class="pending-card-actions">
+          <button class="pending-approve-btn" onclick="approveUser('${safeDocId}')">✅ Aprovar Acesso</button>
+          <button class="pending-reject-btn" onclick="rejectUser('${safeDocId}','${safeName}')">❌ Rejeitar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+// Expõe imediatamente para o listener Firebase poder iniciar sem esperar o fim do script
+window.renderPendingUsers = renderPendingUsers;
+
+async function approveUser(docId){
+  if(!confirm('Aprovar este cadastro? O cliente poderá acessar a plataforma.')) return;
+  try{
+    const fb = window._fb;
+    if(!fb){ alert('Firebase não disponível'); return; }
+    // Busca dados do pendente
+    const snap = await fb.getDoc(fb.doc(fb.db, "clientes_pendentes", docId));
+    if(!snap.exists()){ alert('Cadastro não encontrado.'); return; }
+    const userData = snap.data();
+    // Move para clientes aprovados
+    await fb.setDoc(fb.doc(fb.db, "clientes", docId), {
+      ...userData,
+      status: 'aprovado',
+      approvedAt: fb.serverTimestamp(),
+      updatedAt: fb.serverTimestamp()
+    });
+    // Remove dos pendentes
+    await fb.deleteDoc(fb.doc(fb.db, "clientes_pendentes", docId));
+    alert('✅ Cadastro de '+userData.nome+' aprovado com sucesso!');
+    // Recarrega lista de clientes aprovados
+    loadClientes();
+  }catch(e){
+    console.error(e);
+    alert('Erro ao aprovar: '+e.message);
+  }
+}
+
+async function rejectUser(docId, nome){
+  if(!confirm('Rejeitar o cadastro de '+nome+'? Esta ação não pode ser desfeita.')) return;
+  try{
+    const fb = window._fb;
+    if(!fb) return;
+    await fb.deleteDoc(fb.doc(fb.db, "clientes_pendentes", docId));
+    alert('Cadastro de '+nome+' rejeitado e removido.');
+  }catch(e){
+    alert('Erro ao rejeitar: '+e.message);
+  }
+}
+function buildAdmCatSelect(){ const sel=document.getElementById('admCat'); sel.innerHTML=Object.keys(DATA).map(c=>`<option value="${c}">${LABELS[c]||c}</option>`).join(''); }
+
+async function admAddProduct(){
+  const code=parseInt(document.getElementById('admCode').value);
+  const name=document.getElementById('admName').value.trim().toUpperCase();
+  const cat=document.getElementById('admCat').value;
+  const price=parseFloat(document.getElementById('admPrice').value)||0;
+  const alertEl=document.getElementById('admAddAlert');
+  alertEl.className='alert-msg';
+  if(!code||!name||!cat){alertEl.textContent='Preencha todos os campos!';alertEl.className='alert-msg error';return;}
+  const btn=document.querySelector('#admListProd .btn-primary');
+  if(btn){btn.textContent='⏳ Salvando...';btn.disabled=true;}
+  try{
+    const fb=window._fb;
+    if(fb){
+      const prodData={code,name,cat,createdAt:Date.now()};
+      if(price>0) prodData.price=price;
+      await fb.addDoc(fb.collection(fb.db,'produtos'), prodData);
+      if(price>0){ PRICES[code]=price; saveData('patoense_prices',PRICES); await savePricesToFirebase(); }
+    }
+    if(!DATA[cat]) DATA[cat]=[];
+    DATA[cat].unshift({code,name});
+    document.getElementById('admCode').value='';
+    document.getElementById('admName').value='';
+    document.getElementById('admPrice').value='';
+    alertEl.textContent='✅ Produto "'+name+'" salvo no banco!';
+    alertEl.className='alert-msg success';
+    render(); buildSidebar();
+    setTimeout(()=>{alertEl.className='alert-msg';},3500);
+  }catch(e){
+    alertEl.textContent='❌ Erro: '+e.message;
+    alertEl.className='alert-msg error';
+  }finally{
+    if(btn){btn.textContent='Adicionar produto';btn.disabled=false;}
+  }
+}
+
+// ── PREÇO COM DEBOUNCE (atualiza enquanto digita, salva no Firebase ao parar) ──
+let _priceDebounceTimer = null;
+function admSavePriceDebounced(code, val){
+  clearTimeout(_priceDebounceTimer);
+  _priceDebounceTimer = setTimeout(()=>{ admSavePrice(code, val); }, 700);
+}
+
+// ── EDITAR NOME DO PRODUTO ──
+// ── VARIÁVEIS PARA EDIÇÃO DE PRODUTO VIA MODAL ──
+let _epCat = '', _epCode = 0, _epNameOld = '';
+
+function admEditProduct(cat, code, name){
+  _epCat = cat; _epCode = code; _epNameOld = name;
+  document.getElementById('epCode').value = '#' + code;
+  document.getElementById('epNameOld').value = name;
+  document.getElementById('epNameNew').value = name;
+  document.getElementById('errEpName').classList.remove('show');
+  document.getElementById('editProductModal').classList.add('open');
+  setTimeout(()=>{ const inp=document.getElementById('epNameNew'); inp.focus(); inp.select(); }, 200);
+}
+function closeEditProduct(){
+  document.getElementById('editProductModal').classList.remove('open');
+}
+function confirmEditProduct(){
+  const novoNome = document.getElementById('epNameNew').value.trim();
+  if(!novoNome){ document.getElementById('errEpName').classList.add('show'); return; }
+  document.getElementById('errEpName').classList.remove('show');
+  if(novoNome === _epNameOld){ closeEditProduct(); return; }
+  const novoNomeFmt = novoNome.toUpperCase();
+  const idx = (DATA[_epCat]||[]).findIndex(p=>p.code===_epCode && p.name===_epNameOld);
+  if(idx===-1){ alert('Produto não encontrado!'); closeEditProduct(); return; }
+  // Migra disabled para nova chave
+  const oldKey = _epCode+'|'+_epNameOld;
+  const newKey = _epCode+'|'+novoNomeFmt;
+  if(DISABLED[oldKey]){ DISABLED[newKey]=true; delete DISABLED[oldKey]; saveDisabledToFirebase(); }
+  DATA[_epCat][idx].name = novoNomeFmt;
+  saveData('patoense_prices', PRICES);
+  renderAdmList(document.getElementById('admSearchInput').value||'');
+  render(); buildSidebar();
+  closeEditProduct();
+}
+
+
+// ── IMPRIMIR POR ID ──
+function printOrderById(orderId){
+  const orders = window.ORDERS||[];
+  const o = orders.find(x=>(x._docId===orderId||x.id===orderId));
+  if(!o){ alert('Pedido não encontrado.'); return; }
+
+  // Pré-calcula tudo antes do template
+  const totalItens = (o.items||[]).reduce((s,i)=>s+i.qty, 0);
+  const totalValor = (o.items||[]).reduce((s,i)=>s+(PRICES[i.code]?PRICES[i.code]*i.qty:0), 0);
+  const temPreco   = (o.items||[]).some(it=>PRICES[it.code]);
+  const dataGer    = new Date().toLocaleString('pt-BR');
+
+  const itensRows = (o.items||[]).map((it,j)=>{
+    const bg = j%2===0 ? '#F8FAFF' : '#ffffff';
+    const sub = PRICES[it.code]
+      ? '<td style="padding:8px 10px;text-align:right;font-weight:700;color:#0B2F8A">R$ '+(PRICES[it.code]*it.qty).toFixed(2).replace('.',',')+'</td>'
+      : (temPreco ? '<td></td>' : '');
+    return `<tr style="background:${bg}">
+      <td style="padding:8px 10px;font-family:monospace;color:#6B7BA8">${it.code}</td>
+      <td style="padding:8px 10px">${it.name}</td>
+      <td style="padding:8px 10px;text-align:center;font-weight:800;font-size:15px">${it.qty}</td>
+      ${sub}
+    </tr>`;
+  }).join('');
+
+  const subHeader = temPreco ? '<th style="padding:8px 10px;text-align:right">Subtotal</th>' : '';
+  const totalRow  = totalValor > 0
+    ? `<tr style="background:#EEF3FF;font-weight:800">
+        <td colspan="2" style="padding:8px 10px">💰 TOTAL ESTIMADO</td>
+        <td style="padding:8px 10px;text-align:center">${totalItens}</td>
+        <td style="padding:8px 10px;text-align:right;color:#0B2F8A;font-size:15px">R$ ${totalValor.toFixed(2).replace('.',',')}</td>
+       </tr>`
+    : `<tr style="background:#EEF3FF;font-weight:800">
+        <td colspan="3" style="padding:8px 10px">📦 Total de itens: ${totalItens}</td>
+       </tr>`;
+  const obsRow = o.obs
+    ? `<tr><td style="padding:6px 10px;background:#FFFBEB;font-weight:700;color:#92400E">Observação:</td><td colspan="3" style="padding:6px 10px;background:#FFFBEB;color:#92400E">${o.obs}</td></tr>`
+    : '';
+
+  const printWin = window.open('', '_blank', 'width=800,height=700');
+  printWin.document.write(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Pedido #${o.id||orderId} — Distribuidora Patoense</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: Arial, sans-serif; color: #111827; background:#fff; }
+  .page { max-width: 720px; margin: 0 auto; padding: 32px; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .no-print { display: none !important; }
+    .page { padding: 16px; }
+  }
+  .header { display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #0B2F8A; padding-bottom:16px; margin-bottom:20px; }
+  .logo-block h1 { color:#0B2F8A; font-size:24px; margin:0; letter-spacing:2px; }
+  .logo-block p { color:#6B7BA8; font-size:11px; margin:2px 0 0; }
+  .pedido-badge { background:#0B2F8A; color:#fff; padding:8px 18px; border-radius:8px; text-align:center; }
+  .pedido-badge .num { font-size:20px; font-weight:900; letter-spacing:1px; }
+  .pedido-badge .lbl { font-size:10px; opacity:.7; }
+  .status-badge { display:inline-block; padding:4px 14px; border-radius:20px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.8px; margin-bottom:16px; ${o.confirmed?'background:#D1FAE5;color:#065F46':'background:#FEF3C7;color:#92400E'} }
+  .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:20px; }
+  .info-item label { display:block; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:1.5px; color:#6B7BA8; margin-bottom:3px; }
+  .info-item span { font-size:13px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; margin-bottom:8px; }
+  thead tr { background:#0B2F8A; color:#fff; }
+  th { padding:8px 10px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.8px; }
+  td { font-size:12.5px; border-bottom:1px solid #E5E7EB; }
+  .footer { margin-top:28px; padding-top:14px; border-top:1px dashed #D1D5DB; display:flex; justify-content:space-between; font-size:10px; color:#9CA3AF; }
+  .btn-print { display:block; margin:20px auto 0; padding:10px 32px; background:#0B2F8A; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="logo-block">
+      <h1>DISTRIBUIDORA PATOENSE</h1>
+      <p>Catálogo Digital 2026 — Patos / PB</p>
+    </div>
+    <div class="pedido-badge">
+      <div class="lbl">PEDIDO</div>
+      <div class="num">#${o.id||orderId}</div>
+    </div>
+  </div>
+
+  <div class="status-badge">${o.confirmed ? '✅ PEDIDO CONFIRMADO' : '⏳ AGUARDANDO CONFIRMAÇÃO'}</div>
+
+  <div class="info-grid">
+    <div class="info-item"><label>Cliente</label><span>${o.cliente||'—'}</span></div>
+    <div class="info-item"><label>Vendedor</label><span>${o.vendedor||'—'}</span></div>
+    <div class="info-item"><label>Data de Entrega</label><span>${o.date||'A definir'} ${o.period?'('+o.period+')':''}</span></div>
+    <div class="info-item"><label>Endereço</label><span>${o.address||'—'}</span></div>
+    <div class="info-item"><label>Forma de Pagamento</label><span>${o.payment||'—'}</span></div>
+    <div class="info-item"><label>Gerado em</label><span>${dataGer}</span></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:70px">Código</th>
+        <th>Produto</th>
+        <th style="width:60px;text-align:center">Qtd</th>
+        ${subHeader}
+      </tr>
+    </thead>
+    <tbody>
+      ${itensRows}
+      ${obsRow}
+      ${totalRow}
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <span>Distribuidora Patoense — Patos / PB</span>
+    <span>Pedido #${o.id||orderId} · ${dataGer}</span>
+  </div>
+
+  <button class="btn-print no-print" onclick="window.print()">🖨️ Imprimir / Salvar PDF</button>
+</div>
+<script>
+  // Abre diálogo de impressão automaticamente
+  window.onload = function(){ setTimeout(function(){ window.print(); }, 400); };
+<\/script>
+</body>
+</html>`);
+  printWin.document.close();
+}
+
+// ── CONFIRMAR POR ID ──
+async function confirmOrderById(orderId){
+  if(!confirm('Confirmar este pedido?')) return;
+  const orders = window.ORDERS||[];
+  const o = orders.find(x=>(x._docId===orderId||x.id===orderId));
+  if(!o){ alert('Pedido não encontrado.'); return; }
+  o.confirmed=true;
+  saveData('patoense_orders', orders);
+  if(o._docId) await confirmOrderFirebase(o._docId);
+  renderAdmOrders();
+}
+
+// ── CANCELAR / EXCLUIR PEDIDO POR ID ──
+async function cancelOrderById(orderId){
+  const orders = window.ORDERS||[];
+  const o = orders.find(x=>(x._docId===orderId||x.id===orderId));
+  const label = o&&o.confirmed ? 'Excluir este pedido confirmado?' : 'Cancelar este pedido?';
+  if(!confirm(label+'\nEsta ação não pode ser desfeita.')) return;
+  try{
+    const fb = window._fb;
+    if(fb && orderId){
+      await fb.deleteDoc(fb.doc(fb.db,"pedidos",orderId));
+    }
+  }catch(e){ console.warn('Erro ao excluir pedido do Firebase:', e); }
+  // Remove localmente
+  const idx = orders.findIndex(x=>(x._docId===orderId||x.id===orderId));
+  if(idx!==-1) orders.splice(idx,1);
+  window.ORDERS = orders;
+  saveData('patoense_orders', orders);
+  renderAdmOrders();
+}
+
+async function admDeleteProduct(cat,code,name){
+  if(!confirm('Excluir permanentemente "'+name+'"? Esta ação não pode ser desfeita.')) return;
+  DATA[cat]=DATA[cat].filter(p=>!(p.code===code&&p.name===name));
+  delete PRICES[code]; delete DISABLED[code+'|'+name];
+  saveData('patoense_prices',PRICES); saveData('patoense_disabled',DISABLED);
+  renderAdmList(document.getElementById('admSearchInput').value);
+  render(); buildSidebar();
+  // Remove do Firestore: busca o doc pelo code e name e deleta
+  try{
+    const fb=window._fb;
+    if(fb){
+      const snap = await fb.getDocs(fb.collection(fb.db,'produtos'));
+      snap.forEach(async docSnap => {
+        const d = docSnap.data();
+        if(d.code===code && d.name===name){
+          await fb.deleteDoc(fb.doc(fb.db,'produtos',docSnap.id));
+        }
+      });
+    }
+  }catch(e){ console.warn('Erro ao excluir produto do Firebase:',e.message); }
+}
+
+function admToggleDisable(cat,code,name){
+  const key=code+'|'+name;
+  DISABLED[key]=!DISABLED[key];
+  if(!DISABLED[key]) delete DISABLED[key];
+  saveData('patoense_disabled',DISABLED);
+  // 🔥 Salva no Firebase
+  saveDisabledToFirebase();
+  renderAdmList(document.getElementById('admSearchInput').value);
+  render();
+}
+
+function admSavePrice(code, val){
+  const p=parseFloat(val);
+  if(p>0){ PRICES[code]=p; } else { delete PRICES[code]; }
+  saveData('patoense_prices',PRICES);
+  // 🔥 Salva no Firebase (sync em tempo real para todos)
+  savePricesToFirebase();
+  render();
+}
+
+async function savePricesToFirebase(){
+  try{
+    const fb = window._fb;
+    if(!fb) return;
+    // Firebase não aceita chaves numéricas no top-level, prefixamos com _
+    const encoded = {};
+    Object.entries(PRICES).forEach(([k,v])=>{ encoded['_'+k]=v; });
+    await fb.setDoc(fb.doc(fb.db,"config","prices"), encoded);
+  }catch(e){ console.warn('Erro ao salvar preços:', e); }
+}
+
+async function saveDisabledToFirebase(){
+  try{
+    const fb = window._fb;
+    if(!fb) return;
+    await fb.setDoc(fb.doc(fb.db,"config","disabled"), DISABLED||{});
+  }catch(e){ console.warn('Erro ao salvar disabled:', e); }
+}
+
+async function savePromosToFirebase(){
+  try{
+    const fb = window._fb;
+    if(!fb) return;
+    await fb.setDoc(fb.doc(fb.db,"config","promos"), { list: PROMOS||[] });
+  }catch(e){ console.warn('Erro ao salvar promos:', e); }
+}
+
+function renderAdmList(q){
+  const list=document.getElementById('admProductsList');
+  let all=[];
+  Object.entries(DATA).forEach(([cat,items])=>items.forEach(p=>all.push({...p,cat})));
+  if(q.trim()){const s=q.trim().toLowerCase(); all=all.filter(p=>p.name.toLowerCase().includes(s)||String(p.code).includes(s));}
+  const disabledKey = (p) => p.code+'|'+p.name;
+  list.innerHTML=all.slice(0,200).map(p=>{
+    const isDisabled=DISABLED[disabledKey(p)];
+    const price=PRICES[p.code]||'';
+    return `<div class="adm-prod-row ${isDisabled?'out-of-stock-row':''}">
+      <div class="adm-prod-code">#${p.code}</div>
+      <div class="adm-prod-name">${p.name}</div>
+      <div class="adm-prod-cat" style="font-size:10px">${LABELS[p.cat]||p.cat}</div>
+      <input class="adm-price-input" type="number" step="0.01" placeholder="R$" value="${price}" 
+        title="Preço" oninput="admSavePriceDebounced(${p.code},this.value)" onblur="admSavePrice(${p.code},this.value)">
+      <button class="adm-edit-btn" onclick="admEditProduct('${p.cat}',${p.code},'${p.name.replace(/'/g,"\\'")}')" title="Editar nome do produto">✏️</button>
+      <button class="adm-disable-btn" onclick="admToggleDisable('${p.cat}',${p.code},'${p.name.replace(/'/g,"\'")}')" title="${isDisabled?'Habilitar':'Desabilitar (em falta)'}">${isDisabled?'✅':'⚠️'}</button>
+      <button class="adm-del-btn" onclick="admDeleteProduct('${p.cat}',${p.code},'${p.name.replace(/'/g,"\'")}')" title="Excluir permanentemente">🗑</button>
+    </div>`;
+  }).join('')||'<div style="text-align:center;padding:20px;color:var(--muted)">Nenhum produto encontrado</div>';
+}
+document.addEventListener('input',function(e){
+  if(e.target.id==='admSearchInput') renderAdmList(e.target.value);
+  if(e.target.id==='admPromoSearch') renderAdmPromo(e.target.value);
+});
+
+/* ══════════════════════════════════════════
+   PROMOÇÕES
+══════════════════════════════════════════ */
+function renderAdmPromo(q){
+  const grid=document.getElementById('admPromoGrid');
+  let all=[];
+  Object.entries(DATA).forEach(([cat,items])=>items.forEach(p=>all.push({...p,cat})));
+  if(q.trim()){const s=q.trim().toLowerCase(); all=all.filter(p=>p.name.toLowerCase().includes(s)||String(p.code).includes(s));}
+  all=all.slice(0,80);
+  const selKeys=PROMOS.map(p=>p.code+'|'+p.name);
+  document.getElementById('promoCount').textContent=PROMOS.length+' / 5 selecionados';
+  grid.innerHTML=all.map(p=>{
+    const key=p.code+'|'+p.name;
+    const isSel=selKeys.includes(key);
+    const existing=PROMOS.find(x=>x.code===p.code&&x.name===p.name);
+    const promoPrice=existing?existing.price:(PRICES[p.code]||'');
+    return `<div class="promo-admin-card ${isSel?'selected':''}" id="pac_${key.replace(/[^a-z0-9]/gi,'_')}">
+      <div class="promo-admin-card-name">${p.name}</div>
+      <div class="promo-admin-card-cat">${LABELS[p.cat]||p.cat}</div>
+      <div class="promo-admin-price-row">
+        <input class="promo-price-input" type="number" step="0.01" placeholder="Preço R$"
+          value="${promoPrice}" id="pp_${p.code}_${p.name.replace(/[^a-z0-9]/gi,'_')}">
+        <button class="promo-select-btn ${isSel?'selected-btn':''}" onclick="togglePromo(${p.code},'${p.name.replace(/'/g,"\'")}','${p.cat}')">
+          ${isSel?'✓ Selecionado':'+ Adicionar'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function togglePromo(code,name,cat){
+  const key=code+'|'+name;
+  const idx=PROMOS.findIndex(p=>p.code===code&&p.name===name);
+  if(idx>=0){
+    PROMOS.splice(idx,1);
+  } else {
+    if(PROMOS.length>=5){alert('Máximo de 5 promoções!');return;}
+    const priceId='pp_'+code+'_'+name.replace(/[^a-z0-9]/gi,'_');
+    const priceEl=document.getElementById(priceId);
+    const price=priceEl?parseFloat(priceEl.value)||0:0;
+    PROMOS.push({code,name,cat,price});
+  }
+  saveData('patoense_promos',PROMOS);
+  // 🔥 Salva no Firebase
+  savePromosToFirebase();
+  renderAdmPromo(document.getElementById('admPromoSearch').value||'');
+  renderPromoCarousel();
+}
+
+function renderPromoCarousel(){
+  const wrap=document.getElementById('promoWrap');
+  const carousel=document.getElementById('promoCarousel');
+  const dots=document.getElementById('promoDots');
+  if(!PROMOS.length){wrap.style.display='none';return;}
+  wrap.style.display='block';
+  carousel.innerHTML=PROMOS.map((p,i)=>`
+    <div class="promo-slide">
+      <div style="flex:1;min-width:0">
+        <div class="promo-slide-badge">🔥 PROMOÇÃO</div>
+        <div class="promo-slide-name">${p.name}</div>
+        ${p.price?`<div class="promo-slide-price">R$ ${p.price.toFixed(2).replace('.',',')} <span>/ unid.</span></div>`:''}
+        <button class="promo-add-btn" onclick="addPromoToCart(${p.code},'${p.name.replace(/'/g,"\'")}')">🛒 Adicionar ao carrinho</button>
+      </div>
+      <div class="promo-placeholder-img">🏷️</div>
+    </div>`).join('');
+  dots.innerHTML=PROMOS.map((p,i)=>`<button class="promo-dot ${i===0?'active':''}" onclick="goToPromo(${i})"></button>`).join('');
+  promoIdx=0;
+  startPromoAuto();
+}
+
+let promoIdx=0, promoTimer=null;
+function promoNav(d){
+  promoIdx=(promoIdx+d+PROMOS.length)%PROMOS.length;
+  updatePromoSlide();
+  startPromoAuto();
+}
+function goToPromo(i){ promoIdx=i; updatePromoSlide(); startPromoAuto(); }
+function updatePromoSlide(){
+  const c=document.getElementById('promoCarousel');
+  if(c) c.style.transform=`translateX(-${promoIdx*100}%)`;
+  document.querySelectorAll('.promo-dot').forEach((d,i)=>d.classList.toggle('active',i===promoIdx));
+}
+function startPromoAuto(){
+  if(promoTimer) clearInterval(promoTimer);
+  if(PROMOS.length>1) promoTimer=setInterval(()=>{promoIdx=(promoIdx+1)%PROMOS.length;updatePromoSlide();},4000);
+}
+function addPromoToCart(code,name){
+  const k=code+'|'+name;
+  cart[k]?cart[k].qty++:(cart[k]={code,name,qty:1});
+  updateBadge(); renderCart();
+  // feedback visual
+  const btn=event.target;
+  btn.textContent='✅ Adicionado!';
+  setTimeout(()=>{btn.textContent='🛒 Adicionar ao carrinho';},1400);
+}
+
+/* ══════════════════════════════════════════
+   PEDIDOS
+══════════════════════════════════════════ */
+async function saveOrder(orderData){
+  // Salva no Firebase — o listener onSnapshot vai atualizar window.ORDERS automaticamente
+  await saveOrderFirebase(orderData);
+  // Adiciona localmente de imediato para feedback visual instantâneo
+  if(!window.ORDERS) window.ORDERS = [];
+  window.ORDERS.unshift(orderData);
+  ORDERS = window.ORDERS;
+  try{ localStorage.setItem('patoense_orders', JSON.stringify(window.ORDERS.slice(0,50))); }catch(e){}
+}
+
+function renderAdmOrders(){
+  const list=document.getElementById('admOrdersList');
+  if(!list) return;
+  const orders = window.ORDERS || [];
+  if(!orders.length){
+    list.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted)">Nenhum pedido ainda.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  orders.forEach((o, i) => {
+    const oid = o._docId || o.id || String(i);
+
+    // Totais
+    const totalQty = (o.items||[]).reduce((s,it)=>s+it.qty, 0);
+    const totalVal = (o.items||[]).reduce((s,it)=>s+(PRICES[it.code]?PRICES[it.code]*it.qty:0), 0);
+
+    const card = document.createElement('div');
+    card.className = 'order-card';
+    card.style.cssText = 'border:1.5px solid var(--border);border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 2px 8px rgba(11,47,138,.06)';
+
+    // ── CABEÇALHO (sempre visível + botões aqui) ──
+    const head = document.createElement('div');
+    head.style.cssText = 'background:var(--blue-pale);padding:12px 14px;display:flex;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer;user-select:none';
+    head.innerHTML = `
+      <span style="font-size:12px;font-weight:900;color:var(--blue);font-family:monospace;flex:1">📦 Pedido #${o.id||i+1}</span>
+      <span style="font-size:11px;color:var(--muted)">${o.date||''} ${o.period?'· '+o.period:''}</span>
+      <span style="font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;${o.confirmed?'background:#D1FAE5;color:#065F46':'background:#FEF3C7;color:#92400E'}">${o.confirmed?'✅ Confirmado':'⏳ Pendente'}</span>
+      <span style="font-size:10px;color:var(--muted)">${totalQty} item(s)${totalVal>0?' · R$ '+totalVal.toFixed(2).replace('.',','):''}</span>
+      <span class="toggle-arrow" style="font-size:14px;color:var(--muted);transition:transform .2s">▼</span>`;
+
+    // ── BOTÕES DE AÇÃO (sempre visíveis, fora do collapse) ──
+    const actions = document.createElement('div');
+    actions.style.cssText = 'background:#F8FAFF;border-top:1px solid var(--border);padding:8px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+    actions.innerHTML = `
+      <button class="order-print-btn" style="font-size:12px;padding:7px 14px;display:flex;align-items:center;gap:6px">🖨️ Imprimir PDF</button>
+      ${!o.confirmed
+        ? `<button class="order-confirm-btn" style="font-size:12px;padding:7px 14px">✅ Confirmar Pedido</button>
+           <button class="order-cancel-btn" style="font-size:12px;padding:7px 14px">❌ Cancelar</button>`
+        : `<button class="order-cancel-btn" style="font-size:11px;padding:6px 12px;background:#FEE2E2;color:#DC2626;border:1px solid #FCA5A5;border-radius:8px;font-family:Nunito,sans-serif;font-weight:700;cursor:pointer">🗑 Excluir</button>`
+      }
+      <span style="margin-left:auto;font-size:10px;color:var(--muted)">Cliente: <strong>${(o.cliente||'—').split('(')[0].trim()}</strong></span>`;
+
+    // ── CORPO EXPANSÍVEL ──
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:12px 14px;font-size:12.5px;display:none';
+
+    const itensHtml = (o.items||[]).map((it,j)=>{
+      const sub = PRICES[it.code] ? `<span style="color:var(--blue);font-weight:700;margin-left:auto">R$ ${(PRICES[it.code]*it.qty).toFixed(2).replace('.',',')}</span>` : '';
+      return `<div style="display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed var(--border);font-size:12px;align-items:center">
+        <span style="font-family:monospace;color:var(--muted);font-size:10px;min-width:38px">#${it.code}</span>
+        <span style="flex:1">${it.name}</span>
+        <span style="font-weight:800;color:var(--blue)">×${it.qty}</span>
+        ${sub}
+      </div>`;
+    }).join('');
+
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:10px;font-size:12px">
+        <div><span style="color:var(--muted);font-size:11px;font-weight:700">CLIENTE</span><br>${o.cliente||'—'}</div>
+        <div><span style="color:var(--muted);font-size:11px;font-weight:700">VENDEDOR</span><br>${o.vendedor||'—'}</div>
+        <div><span style="color:var(--muted);font-size:11px;font-weight:700">ENDEREÇO</span><br>${o.address||'—'}</div>
+        <div><span style="color:var(--muted);font-size:11px;font-weight:700">PAGAMENTO</span><br>${o.payment||'—'}</div>
+        ${o.obs?`<div style="grid-column:1/-1"><span style="color:var(--muted);font-size:11px;font-weight:700">OBS</span><br>${o.obs}</div>`:''}
+      </div>
+      <div style="border-top:1.5px solid var(--border);padding-top:8px">${itensHtml}</div>
+      ${totalVal>0?`<div style="margin-top:8px;padding:8px 12px;background:var(--blue-pale);border-radius:8px;font-size:13px;font-weight:800;color:var(--blue);text-align:right">💰 Total estimado: R$ ${totalVal.toFixed(2).replace('.',',')}</div>`:''}`;
+
+    // Toggle expand/collapse no cabeçalho
+    let expanded = false;
+    head.addEventListener('click', ()=>{
+      expanded = !expanded;
+      body.style.display = expanded ? 'block' : 'none';
+      head.querySelector('.toggle-arrow').style.transform = expanded ? 'rotate(180deg)' : '';
+    });
+
+    // Eventos dos botões
+    actions.querySelector('.order-print-btn').addEventListener('click', (e)=>{ e.stopPropagation(); printOrderById(oid); });
+    const cBtn = actions.querySelector('.order-confirm-btn');
+    if(cBtn) cBtn.addEventListener('click', (e)=>{ e.stopPropagation(); confirmOrderById(oid); });
+    const xBtn = actions.querySelector('.order-cancel-btn');
+    if(xBtn) xBtn.addEventListener('click', (e)=>{ e.stopPropagation(); cancelOrderById(oid); });
+
+    card.appendChild(head);
+    card.appendChild(actions);
+    card.appendChild(body);
+    list.appendChild(card);
+  });
+}
+
+async function confirmOrder(i){
+  const orders = window.ORDERS || [];
+  if(!orders[i]) return;
+  orders[i].confirmed=true;
+  saveData('patoense_orders', orders);
+  if(orders[i]._docId) await confirmOrderFirebase(orders[i]._docId);
+  renderAdmOrders();
+}
+
+function printOrder(i){
+  const o=(window.ORDERS||[])[i];
+  const area=document.getElementById('printArea');
+  area.style.display='block';
+  area.innerHTML=`
+    <div style="font-family:Arial,sans-serif;padding:30px;max-width:700px;margin:0 auto">
+      <div style="text-align:center;border-bottom:3px solid #0B2F8A;padding-bottom:16px;margin-bottom:20px">
+        <h1 style="color:#0B2F8A;font-size:28px;margin:0">DISTRIBUIDORA PATOENSE</h1>
+        <p style="color:#666;margin:4px 0">Catálogo Digital 2026</p>
+      </div>
+      <h2 style="font-size:18px;margin:0 0 16px">📦 Pedido #${o.id||i+1}</h2>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px">
+        <tr><td style="padding:6px;background:#f5f8ff;font-weight:bold;width:120px">Cliente:</td><td style="padding:6px">${o.cliente||'—'}</td></tr>
+        <tr><td style="padding:6px;background:#f5f8ff;font-weight:bold">Entrega:</td><td style="padding:6px">${o.date||'—'} ${o.period?'('+o.period+')':''}</td></tr>
+        <tr><td style="padding:6px;background:#f5f8ff;font-weight:bold">Endereço:</td><td style="padding:6px">${o.address||'—'}</td></tr>
+        <tr><td style="padding:6px;background:#f5f8ff;font-weight:bold">Pagamento:</td><td style="padding:6px">${o.payment||'—'}</td></tr>
+        ${o.obs?`<tr><td style="padding:6px;background:#f5f8ff;font-weight:bold">Obs:</td><td style="padding:6px">${o.obs}</td></tr>`:''}
+      </table>
+      <h3 style="font-size:15px;border-bottom:1px solid #ddd;padding-bottom:8px">Itens do Pedido</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#0B2F8A;color:#fff"><th style="padding:8px;text-align:left">Código</th><th style="padding:8px;text-align:left">Produto</th><th style="padding:8px;text-align:center">Qtd</th></tr></thead>
+        <tbody>${o.items.map((it,j)=>`<tr style="background:${j%2===0?'#f9f9f9':'#fff'}"><td style="padding:7px 8px;font-family:monospace">${it.code}</td><td style="padding:7px 8px">${it.name}</td><td style="padding:7px 8px;text-align:center;font-weight:bold">${it.qty}</td></tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:20px;padding:14px;background:#EEF3FF;border-radius:8px;font-size:13px">
+        <strong>Total:</strong> ${o.items.reduce((s,i)=>s+i.qty,0)} itens
+      </div>
+      <div style="margin-top:30px;text-align:center;font-size:11px;color:#999">Gerado em ${new Date().toLocaleDateString('pt-BR')} — Distribuidora Patoense</div>
+    </div>`;
+  setTimeout(()=>{ window.print(); area.style.display='none'; area.innerHTML=''; },200);
+}
+
+function printAllOrders(){
+  const orders = window.ORDERS||[];
+  if(!orders.length){alert('Nenhum pedido para imprimir.');return;}
+  const area=document.getElementById('printArea');
+  area.style.display='block';
+  area.innerHTML=orders.map((o,i)=>`
+    <div style="font-family:Arial,sans-serif;padding:24px;page-break-after:always;max-width:700px">
+      <div style="text-align:center;border-bottom:2px solid #0B2F8A;padding-bottom:12px;margin-bottom:16px">
+        <h2 style="color:#0B2F8A;margin:0">DISTRIBUIDORA PATOENSE — Pedido #${o.id||i+1}</h2>
+      </div>
+      <div style="font-size:12px;margin-bottom:12px">
+        <b>Cliente:</b> ${o.cliente||'—'} &nbsp;|&nbsp; <b>Entrega:</b> ${o.date||'—'} ${o.period?'('+o.period+')':''} &nbsp;|&nbsp; <b>Pagamento:</b> ${o.payment||'—'}
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:#0B2F8A;color:#fff"><th style="padding:6px;text-align:left">Cód.</th><th style="padding:6px;text-align:left">Produto</th><th style="padding:6px;text-align:center">Qtd</th></tr></thead>
+        <tbody>${o.items.map((it,j)=>`<tr style="background:${j%2===0?'#f5f5f5':'#fff'}"><td style="padding:5px 6px;font-family:monospace">${it.code}</td><td style="padding:5px 6px">${it.name}</td><td style="padding:5px 6px;text-align:center;font-weight:bold">${it.qty}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>`).join('');
+  setTimeout(()=>{ window.print(); area.style.display='none'; area.innerHTML=''; },200);
+}
+
+/* ══════════════════════════════════════════
+   CARRINHO
+══════════════════════════════════════════ */
+let cart={};
+function cartTotal(){ return Object.values(cart).reduce((s,i)=>s+i.qty,0); }
+function updateBadge(){
+  const n=cartTotal(); const b=document.getElementById('cartBadge');
+  b.textContent=n;
+  if(n>0){b.classList.remove('hidden');b.classList.add('pop');setTimeout(()=>b.classList.remove('pop'),300);}
+  else b.classList.add('hidden');
+}
+const cartBtnHtml=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="13" height="13"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg> + Carrinho`;
+
+function addToCart(code,name,btn){
+  const k=code+'|'+name;
+  cart[k]?cart[k].qty++:(cart[k]={code,name,qty:1});
+  updateBadge(); renderCart();
+  btn.classList.add('added');
+  btn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg> Adicionado`;
+  setTimeout(()=>{btn.classList.remove('added');btn.innerHTML=cartBtnHtml;},1400);
+}
+function changeQty(k,d){ if(!cart[k]) return; cart[k].qty+=d; if(cart[k].qty<=0) delete cart[k]; updateBadge(); renderCart(); }
+function removeItem(k){ delete cart[k]; updateBadge(); renderCart(); }
+function clearCart(){ if(!Object.keys(cart).length) return; if(!confirm('Limpar carrinho?')) return; cart={}; updateBadge(); renderCart(); }
+function openCart(){ document.getElementById('cartDrawer').classList.add('open'); document.getElementById('cartOverlay').classList.add('open'); }
+function closeCart(){ document.getElementById('cartDrawer').classList.remove('open'); document.getElementById('cartOverlay').classList.remove('open'); }
+
+function renderCart(){
+  const items=Object.entries(cart);
+  const body=document.getElementById('cartBody');
+  const foot=document.getElementById('cartFoot');
+  if(!items.length){
+    foot.style.display='none';
+    body.innerHTML=`<div class="cart-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg><p>Carrinho vazio</p><small>Adicione produtos para fazer seu pedido</small></div>`;
+    return;
+  }
+  foot.style.display='flex';
+  const tot=cartTotal();
+  document.getElementById('cartCount').textContent=`${tot} ${tot===1?'item':'itens'}`;
+  body.innerHTML=items.map(([k,it])=>`
+    <div class="cart-item">
+      <div class="ci-info">
+        <div class="ci-name">${it.name}</div>
+        <div class="ci-code">Cód: ${it.code}${PRICES[it.code]?' · R$ '+PRICES[it.code].toFixed(2).replace('.',','):''}</div>
+      </div>
+      <div class="ci-qty">
+        <button class="qty-btn" onclick="changeQty('${k}',-1)">−</button>
+        <span class="qty-num">${it.qty}</span>
+        <button class="qty-btn" onclick="changeQty('${k}',1)">+</button>
+      </div>
+      <button class="remove-btn" onclick="removeItem('${k}')" title="Remover">✕</button>
+    </div>`).join('');
+}
+
+/* ══════════════════════════════════════════
+   CHECKOUT
+══════════════════════════════════════════ */
+let selectedPayment = '';
+let selectedVendedor = null;
+
+function selectPayment(btn, method){
+  document.querySelectorAll('.payment-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedPayment=method;
+}
+
+const PAYMENT_LABELS = {
+  'pix':'PIX','dinheiro':'Dinheiro','cartao_debito':'Cartão de Débito',
+  'cartao_credito':'Cartão de Crédito','boleto':'Boleto/Fatura','prazo':'A Prazo'
+};
+
+function selectVendedor(btn){
+  document.querySelectorAll('.checkout-vend-btn').forEach(function(b){ b.classList.remove('selected'); });
+  btn.classList.add('selected');
+  selectedVendedor = { nome: btn.getAttribute('data-nome'), numero: btn.getAttribute('data-numero') };
+  var hint = document.getElementById('vendHint');
+  if(hint) hint.textContent = 'Vendedor selecionado: ' + selectedVendedor.nome;
+  var btnFin = document.getElementById('btnFinalizar');
+  if(btnFin){ btnFin.disabled = false; btnFin.textContent = 'Finalizar com ' + selectedVendedor.nome + ' no WhatsApp'; }
+}
+
+function openCheckout(){
+  if(!Object.keys(cart).length){alert('Carrinho vazio!');return;}
+  const items=Object.entries(cart);
+  const summary=document.getElementById('checkoutSummary');
+  summary.innerHTML=items.map(([k,it])=>`
+    <div class="checkout-item-row">
+      <span class="checkout-item-name">${it.name}</span>
+      <span class="checkout-item-qty">×${it.qty}</span>
+      ${PRICES[it.code]?`<span style="font-weight:700;color:var(--blue)">R$ ${(PRICES[it.code]*it.qty).toFixed(2).replace('.',',')}</span>`:''}
+    </div>`).join('');
+  const tot=cartTotal();
+  document.getElementById('checkoutTotalItems').textContent=`${tot} ${tot===1?'item':'itens'}`;
+  // Setar data mínima = amanhã
+  const tomorrow=new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+  document.getElementById('checkoutDate').min=tomorrow.toISOString().split('T')[0];
+  document.getElementById('checkoutDate').value='';
+  document.getElementById('checkoutAddress').value=currentUser?`${currentUser.endereco||''} ${currentUser.cidade||''} ${currentUser.uf||''}`.trim():'';
+  selectedPayment='';
+  selectedVendedor=null;
+  document.querySelectorAll('.payment-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.checkout-vend-btn').forEach(b=>b.classList.remove('selected'));
+  var vendHintEl=document.getElementById('vendHint'); if(vendHintEl) vendHintEl.textContent='Toque no vendedor desejado para selecionar';
+  var btnFinEl=document.getElementById('btnFinalizar'); if(btnFinEl){ btnFinEl.disabled=true; btnFinEl.textContent='Finalizar Pedido no WhatsApp'; }
+  document.getElementById('checkoutObs').value='';
+  closeCart();
+  document.getElementById('checkoutModal').classList.add('open');
+}
+function closeCheckout(){ document.getElementById('checkoutModal').classList.remove('open'); }
+
+async function sendCheckout(){
+  if(!selectedVendedor){ alert('Selecione um vendedor antes de finalizar!'); return; }
+  var vendNome=selectedVendedor.nome;
+  var numero=selectedVendedor.numero;
+  const date=document.getElementById('checkoutDate').value;
+  const period=document.getElementById('checkoutPeriod').value;
+  const address=document.getElementById('checkoutAddress').value.trim();
+  const obs=document.getElementById('checkoutObs').value.trim();
+  const items=Object.values(cart);
+  if(!items.length){alert('Carrinho vazio!');return;}
+
+  // Salvar pedido
+  const orderId='PED'+Date.now().toString().slice(-6);
+  const periodLabel={'manha':'Manhã (8h–12h)','tarde':'Tarde (12h–18h)','noite':'Noite (18h–21h)','':''}[period]||period;
+  const dateFormatted=date?new Date(date+'T12:00:00').toLocaleDateString('pt-BR'):'A definir';
+  const payLabel=PAYMENT_LABELS[selectedPayment]||selectedPayment||'Não informado';
+
+  const orderData={
+    id:orderId,
+    date:dateFormatted,
+    period:periodLabel,
+    address:address||'—',
+    payment:payLabel,
+    obs:obs||'',
+    cliente:currentUser?currentUser.nome+' ('+currentUser.tel+')':'Não identificado',
+    items:items,
+    vendedor:vendNome,
+    confirmed:false,
+    ts:Date.now()
+  };
+  await saveOrder(orderData);
+
+  // Montar mensagem WhatsApp
+  const lista=items.map(i=>`• ${i.name}  (Cód: ${i.code})  — Qtd: ${i.qty}${PRICES[i.code]?' · R$ '+(PRICES[i.code]*i.qty).toFixed(2).replace('.',','):''}`).join('\n');
+  const clienteInfo=currentUser?`\n\n👤 Cliente: ${currentUser.nome}\n${currentUser.docTipo||'DOC'}: ${currentUser.doc||'—'}${currentUser.tel?'\n📞 Tel: '+currentUser.tel:''}`:'';
+  const enderecoInfo=address?`\n📍 Entrega: ${address}`:'';
+  const dataInfo=date?`\n📅 Data: ${dateFormatted}${periodLabel?' — '+periodLabel:''}`:'';
+  const pagInfo=selectedPayment?`\n💳 Pagamento: ${payLabel}`:'';
+  const obsInfo=obs?`\n📝 Obs: ${obs}`:'';
+
+  const sep='━━━━━━━━━━━━━━━━━━━━━━━';
+  const totalItens=items.reduce(function(s,i){return s+i.qty;},0);
+  const totalValor=items.reduce(function(s,i){return s+(PRICES[i.code]?PRICES[i.code]*i.qty:0);},0);
+  const totalBloco=totalValor>0?sep+'\n💰 *TOTAL ESTIMADO: R$ '+totalValor.toFixed(2).replace('.',',')+'*\n   ('+totalItens+' '+(totalItens===1?'item':'itens')+')':sep+'\n📦 *TOTAL: '+totalItens+' '+(totalItens===1?'item':'itens')+'*';
+  const nomeCliente=currentUser?currentUser.nome:'Cliente';
+  const msg='🏪 *DISTRIBUIDORA PATOENSE*\n📋 *Novo Pedido — #'+orderId+'*\n'+sep+'\n\n🛒 *ITENS DO PEDIDO*\n'+lista+'\n'+totalBloco+clienteInfo+enderecoInfo+dataInfo+pagInfo+obsInfo+'\n'+sep+'\n\nAtenciosamente,\n'+nomeCliente+' 😊';
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`,'_blank');
+  closeCheckout();
+  cart={}; updateBadge(); renderCart();
+}
+
+/* ══════════════════════════════════════════
+   LABELS & RENDER
+══════════════════════════════════════════ */
+const LABELS = {
+  "CACHAÇAS":"🥃 Cachaças","CERVEJAS":"🍺 Cervejas",
+  "REFRIGERANTES":"🥤 Refrigerantes","DESTILADOS":"🍹 Destilados",
+  "PIPOCAS  OUTROS":"🍿 Pipocas & Outros","VINHOS E ESPUMANTES":"🍷 Vinhos & Espumantes",
+  "SUCOS ENERGETICOSAGUASCIGARROS":"🧃 Sucos, Águas & +",
+  "BOMBONIERE E OUTROS":"🍬 Bomboniere & Outros"
+};
+
+const sidebarEl=document.getElementById('sidebar');
+const pillsBar=document.getElementById('catPills');
+
+function buildSidebar(){
+  Array.from(sidebarEl.querySelectorAll('.cat-btn[data-cat]')).forEach(b=>{if(b.dataset.cat!=='all')b.remove();});
+  const total=Object.values(DATA).reduce((s,a)=>s+a.length,0);
+  sidebarEl.querySelector('[data-cat="all"] .badge').textContent=total;
+  document.getElementById('totalBadge').textContent=total;
+  Object.entries(DATA).forEach(([cat,items])=>{
+    const b=document.createElement('button');
+    b.className='cat-btn'; b.dataset.cat=cat;
+    b.innerHTML=`<span class="lbl">${LABELS[cat]||cat}</span><span class="badge">${items.length}</span>`;
+    b.onclick=function(){ filterCat(this,cat); document.querySelectorAll('.pill-btn').forEach(p=>p.classList.toggle('active',p.dataset.cat===cat)); closeSidebar(); };
+    sidebarEl.appendChild(b);
+  });
+}
+
+function isMobile(){ return window.innerWidth<=768; }
+function showPills(){ pillsBar.style.display=isMobile()?'flex':'none'; }
+function buildPills(){
+  pillsBar.innerHTML='';
+  const pAll=document.createElement('button');
+  pAll.className='pill-btn active'; pAll.dataset.cat='all'; pAll.textContent='🏷️ Todos';
+  pAll.onclick=function(){filterCatMobile(this,'all');}; pillsBar.appendChild(pAll);
+  Object.entries(DATA).forEach(([cat])=>{
+    const p=document.createElement('button');
+    p.className='pill-btn'; p.dataset.cat=cat; p.textContent=LABELS[cat]||cat;
+    p.onclick=function(){filterCatMobile(this,cat);}; pillsBar.appendChild(p);
+  });
+}
+function filterCatMobile(btn,cat){
+  document.querySelectorAll('.pill-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.cat-btn').forEach(b=>b.classList.toggle('active',b.dataset.cat===cat));
+  currentCat=cat; render();
+}
+
+let currentCat='all', currentSearch='';
+function getFiltered(){
+  let list=[];
+  (currentCat==='all'?Object.keys(DATA):[currentCat]).forEach(c=>(DATA[c]||[]).forEach(p=>list.push({...p,cat:c})));
+  if(currentSearch.trim()){const q=currentSearch.trim().toLowerCase(); list=list.filter(p=>p.name.toLowerCase().includes(q)||String(p.code).includes(q));}
+  return list;
+}
+
+function render(){
+  const prods=getFiltered();
+  const rawT=currentCat==='all'?'TODOS OS PRODUTOS':(LABELS[currentCat]||currentCat).replace(/^.{2} /,'').toUpperCase();
+  document.getElementById('sectionTitle').textContent=rawT;
+  document.getElementById('sectionCount').textContent=prods.length+' itens';
+  document.getElementById('visibleCount').textContent=prods.length;
+  const grid=document.getElementById('grid');
+  if(!prods.length){grid.innerHTML='<div class="no-results"><h3>Nenhum produto encontrado</h3><p>Tente outro nome ou código.</p></div>';return;}
+  grid.innerHTML=prods.map(p=>{
+    const key=p.code+'|'+p.name;
+    const isOOS=DISABLED[key];
+    const price=PRICES[p.code];
+    return `
+    <div class="card ${isOOS?'out-of-stock disabled-item':''}">
+      <div class="img-area">
+        <div class="code-badge">#${p.code}</div>
+        <img src="${IMG_BASE}${p.code}.jpg" alt="${p.name}" loading="lazy"
+          onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="img-placeholder" style="display:none">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          <span>Sem imagem</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="card-name">${p.name}</div>
+        <div class="card-code">Código: ${p.code}</div>
+        ${price?`<div class="card-price">R$ ${price.toFixed(2).replace('.',',')}</div>`:`<div class="card-price no-price">Consulte o preço</div>`}
+        <button class="add-btn" ${isOOS?'disabled':''} onclick="addToCart(${p.code},'${p.name.replace(/'/g,"\'")}',this)">
+          ${isOOS?'😔 Temporariamente indisponível':cartBtnHtml}
+        </button>
+      </div>
+    </div>`;
+  }).join(''  );
+}
+
+function filterCat(btn,cat){
+  document.querySelectorAll('.cat-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active'); currentCat=cat; render();
+}
+
+/* ══════════════════════════════════════════
+   MOBILE TOGGLE
+══════════════════════════════════════════ */
+document.getElementById('menuToggle').addEventListener('click',()=>{
+  sidebarEl.classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+});
+function closeSidebar(){ sidebarEl.classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('open'); }
+document.getElementById('searchInput').addEventListener('input',function(){ currentSearch=this.value; render(); });
+
+/* ══════════════════════════════════════════
+   INIT
+══════════════════════════════════════════ */
+buildSidebar();
+buildPills();
+showPills();
+window.addEventListener('resize', showPills);
+render();
+renderCart();
+renderPromoCarousel();
+
+// Expõe funções para o módulo Firebase
+window.renderPendingUsers = renderPendingUsers;
+window.renderAdmOrders = renderAdmOrders;
+window.renderAdmList = renderAdmList;
+window.renderAdmPromo = renderAdmPromo;
+window.renderPromoCarousel = renderPromoCarousel;
+window.render = render;
+window.buildSidebar = buildSidebar;
+window.buildPills = buildPills;
+window._DATA_REF = DATA;
+window.updatePromoCount = function(){ const el=document.getElementById('promoCount'); if(el) el.textContent=PROMOS.length+' / 5 selecionados'; };
+
+if(currentUser){
+  closeAuth();
+  applyUserUI();
+  if(currentUser.isAdmin){
+    isAdm = true;
+    document.getElementById('admHeaderBtn').style.display='flex';
+  }
+  // Valida silenciosamente no Firebase se o usuário salvo ainda é aprovado
+  // Só desconecta se Firebase responder com certeza que o usuário NÃO existe
+  (async () => {
+    if (currentUser.isAdmin) return; // admin usa Firebase Auth, não valida aqui
+    if (!currentUser.tel) return;    // sem telefone, não dá pra validar
+    try {
+      const fb = window._fb;
+      if (!fb) return; // Firebase ainda não carregou — mantém sessão
+      const digits = currentUser.tel.replace(/\D/g, '');
+      if (!digits || digits.length < 8) return; // telefone inválido — mantém sessão
+      const snap = await fb.getDoc(fb.doc(fb.db, 'clientes', digits));
+      if (snap.exists()) return; // ✅ usuário confirmado — ok
+      // Só chega aqui se Firebase respondeu e o doc realmente não existe
+      currentUser = null; isAdm = false;
+      saveData('patoense_user', null);
+      document.getElementById('profileBar').style.display='none';
+      document.getElementById('userHeaderName').textContent='Minha Conta';
+      showWelcome();
+      document.getElementById('authModal').classList.add('open');
+    } catch(e) {
+      // Erro de rede, permissão ou Firebase indisponível — mantém sessão local
+    }
+  })();
+} else {
+  // Verifica se tinha cadastro pendente
+  const pending = loadData('patoense_pending', null);
+  if(pending){
+    // Verifica se foi aprovado desde a última vez
+    setTimeout(async()=>{
+      const approved = await checkUserApproved(pending.tel);
+      if(approved){
+        currentUser = approved;
+        saveData('patoense_user', currentUser);
+        saveData('patoense_pending', null);
+        closeAuth();
+        applyUserUI();
+      } else {
+        showWelcome();
+      }
+    }, 1500);
+  } else {
+    showWelcome();
+  }
+}
+</script>
+</body>
+</html>
