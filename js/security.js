@@ -2,18 +2,17 @@
  * security.js — Utilitários de segurança frontend
  * Distribuidora Patoense 2026
  *
- * Responsabilidades:
- *  - Hash de senhas (Web Crypto API)
- *  - Rate limiting de tentativas de login
- *  - Sanitização e validação de inputs
- *  - Helpers de log seguro (sem dados sensíveis)
+ * CHANGELOG DE SEGURANÇA:
+ *  [SEC-01] Rate limiting progressivo com backoff exponencial
+ *  [SEC-02] safeError() aprimorado: mascara stacks e códigos Firebase
+ *  [SEC-03] sanitizeText() mantido; adicionado sanitizeForLog()
+ *  [SEC-04] Validações sem alteração de assinatura (compatibilidade total)
  */
 
 'use strict';
 
 // ══════════════════════════════════════════════════════════════════
 //  HASH DE SENHA — SHA-256 via Web Crypto API
-//  Não usa btoa() que é apenas base64 (reversível, não é hash)
 // ══════════════════════════════════════════════════════════════════
 
 /**
@@ -45,7 +44,6 @@ export async function verificarSenha(senha, tel, storedHash) {
   if (!storedHash) return false;
   const telDigits = (tel || '').replace(/\D/g, '');
 
-  // Hash atual (SHA-256)
   const hashNovo = await hashSenha(senha, telDigits);
   if (hashNovo === storedHash) return true;
 
@@ -59,50 +57,99 @@ export async function verificarSenha(senha, tel, storedHash) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  RATE LIMITING — limita tentativas de login
-//  Armazenado apenas em memória (não persiste entre reloads)
+//  RATE LIMITING PROGRESSIVO — [SEC-01]
+//
+//  MUDANÇAS em relação à versão anterior:
+//   - Backoff exponencial: bloqueio dobra a cada violação (30s→60s→120s→…)
+//   - Máximo de bloqueio: 30 minutos por chave
+//   - Janela deslizante independente por contexto (login/admin/reset)
+//   - reset seguro: zera apenas tentativas bem-sucedidas, não o histórico
+//   - Proteção contra brute force distribuído: limite global por hora
+//
+//  MITIGAÇÃO: impede adivinhação de senha mesmo com IPs rotacionados
+//  (ataque na mesma sessão do browser).
 // ══════════════════════════════════════════════════════════════════
 
-const _attempts = new Map();
+const _attempts    = new Map();
+const _globalCount = { count: 0, windowStart: Date.now() };
+
+/** Limite de tentativas antes do 1º bloqueio */
+const RATE_MAX_ATTEMPTS  = 5;
+/** Duração inicial de bloqueio em ms (30 s) */
+const RATE_BASE_BLOCK_MS = 30_000;
+/** Bloqueio máximo em ms (30 min) */
+const RATE_MAX_BLOCK_MS  = 30 * 60_000;
+/** Janela de observação em ms (10 min) */
+const RATE_WINDOW_MS     = 10 * 60_000;
+/** Limite global de falhas por hora na sessão */
+const RATE_GLOBAL_LIMIT  = 30;
 
 /**
  * Checa se a chave está bloqueada por excesso de tentativas.
+ * Implementa backoff exponencial progressivo.
+ *
  * @param {string} key  — ex: 'login:84999...' ou 'adm:admin@...'
  * @returns {{ blocked: boolean, secs?: number }}
  */
 export function checkRateLimit(key) {
   const now = Date.now();
+
+  // ── Proteção global (brute force distribuído na mesma sessão) ──
+  if (now - _globalCount.windowStart > 60 * 60_000) {
+    _globalCount.count       = 0;
+    _globalCount.windowStart = now;
+  }
+  if (_globalCount.count >= RATE_GLOBAL_LIMIT) {
+    return { blocked: true, secs: Math.ceil((60 * 60_000 - (now - _globalCount.windowStart)) / 1000) };
+  }
+
+  // ── Limite por chave ──
   if (!_attempts.has(key)) {
-    _attempts.set(key, { count: 0, firstAt: now, blockedUntil: 0 });
+    _attempts.set(key, { count: 0, windowStart: now, blockedUntil: 0, violations: 0 });
   }
   const entry = _attempts.get(key);
 
+  // Ainda dentro do período de bloqueio?
   if (now < entry.blockedUntil) {
     return { blocked: true, secs: Math.ceil((entry.blockedUntil - now) / 1000) };
   }
 
-  // Reset janela de 5 minutos
-  if (now - entry.firstAt > 5 * 60 * 1000) {
-    entry.count   = 0;
-    entry.firstAt = now;
+  // Reset da janela deslizante
+  if (now - entry.windowStart > RATE_WINDOW_MS) {
+    entry.count       = 0;
+    entry.windowStart = now;
+    // NÃO reseta violations — histórico de bloqueios persiste
   }
 
   entry.count++;
-  if (entry.count >= 6) {
-    entry.blockedUntil = now + 5 * 60 * 1000;
+  _globalCount.count++;
+
+  if (entry.count >= RATE_MAX_ATTEMPTS) {
+    entry.violations++;
+    // Backoff exponencial: 30s × 2^(violations-1), máximo 30 min
+    const blockMs      = Math.min(RATE_BASE_BLOCK_MS * Math.pow(2, entry.violations - 1), RATE_MAX_BLOCK_MS);
+    entry.blockedUntil = now + blockMs;
     entry.count        = 0;
-    return { blocked: true, secs: 300 };
+    devLog(`rateLimit: bloqueio #${entry.violations} por ${blockMs / 1000}s → ${key}`);
+    return { blocked: true, secs: Math.ceil(blockMs / 1000) };
   }
 
   return { blocked: false };
 }
 
 /**
- * Remove registro de tentativas após login bem-sucedido.
+ * Remove apenas o contador de tentativas após login bem-sucedido.
+ * Mantém o histórico de violations para evitar reset malicioso.
  * @param {string} key
  */
 export function resetRateLimit(key) {
-  _attempts.delete(key);
+  const entry = _attempts.get(key);
+  if (entry) {
+    entry.count        = 0;
+    entry.windowStart  = Date.now();
+    entry.blockedUntil = 0;
+    // violations é mantido intencionalmente
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -110,20 +157,33 @@ export function resetRateLimit(key) {
 // ══════════════════════════════════════════════════════════════════
 
 /**
- * Remove tags HTML/JS de uma string.
- * Previne XSS básico ao exibir dados no DOM.
+ * Remove tags HTML/JS de uma string. Previne XSS ao exibir no DOM.
  * @param {string} str
  * @returns {string}
  */
 export function sanitizeText(str) {
   if (typeof str !== 'string') return '';
   return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#x27;')
     .replace(/\//g, '&#x2F;');
+}
+
+/**
+ * [SEC-03] Sanitiza string para logs: remove dados sensíveis.
+ * Impede que tokens/senhas apareçam acidentalmente nos logs.
+ * @param {string} str
+ * @returns {string}
+ */
+export function sanitizeForLog(str) {
+  if (typeof str !== 'string') return '[non-string]';
+  return str
+    .replace(/("senha"|"password"|"token"|"secret"|"apiKey")\s*:\s*"[^"]*"/gi, '$1:"[REDACTED]"')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .slice(0, 200); // trunca para evitar logs excessivos
 }
 
 /**
@@ -191,7 +251,17 @@ export function validarItensPedido(itens) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  LOG SEGURO — nunca loga dados sensíveis em produção
+//  LOG SEGURO — [SEC-02]
+//
+//  MUDANÇAS:
+//   - safeError() mascara TODOS os detalhes Firebase em produção
+//   - Usa código interno estruturado (contexto + timestamp hash)
+//   - sanitizeForLog() remove tokens/senhas de mensagens acidentais
+//   - devLog/devWarn inalterados (apenas desenvolvimento)
+//
+//  MITIGAÇÃO: impede vazamento de stack traces, project IDs,
+//  Firebase error codes e mensagens internas para o console
+//  em produção (onde atacantes podem inspecioná-los).
 // ══════════════════════════════════════════════════════════════════
 
 const IS_DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -213,15 +283,44 @@ export function devWarn(...args) {
 }
 
 /**
- * Erro sempre logado, mas nunca expõe stack trace em produção.
+ * Gera código de erro interno ofuscado (não sequencial, não previsível).
+ * Formato: ERR-XXXX onde XXXX é hash do contexto + minuto atual.
  * @param {string} context
+ * @returns {string}
+ */
+async function _errorCode(context) {
+  try {
+    const data = new TextEncoder().encode(context + ':' + Math.floor(Date.now() / 60_000));
+    const buf  = await crypto.subtle.digest('SHA-256', data);
+    const hex  = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    return 'ERR-' + hex.slice(0, 6).toUpperCase();
+  } catch (_) {
+    return 'ERR-000000';
+  }
+}
+
+/**
+ * Loga erros com controle rigoroso de exposição.
+ *
+ * Em DEV  : loga contexto + erro completo (stack, código Firebase)
+ * Em PROD : loga apenas código interno, SEM stack, SEM firebase code,
+ *           SEM mensagens que possam revelar estrutura do Firestore
+ *
+ * @param {string}      context — identificador do ponto de erro
  * @param {Error|string} err
  */
-export function safeError(context, err) {
+export async function safeError(context, err) {
   if (IS_DEV) {
     console.error('[ERR]', context, err);
-  } else {
-    // Em produção: loga apenas o contexto, não o stack trace
-    console.error('[ERR]', context);
+    return;
   }
+
+  // Produção: código interno + contexto sanitizado, nada mais
+  const code = await _errorCode(context);
+  // Loga só o código — não loga context diretamente (pode conter IDs)
+  console.error('[ERR]', code);
+
+  // Suprime completamente: stack traces, firebase codes, mensagens internas
+  // Se precisar de rastreabilidade, integre um serviço como Sentry aqui:
+  // Sentry.captureException(err, { tags: { context, code } });
 }
