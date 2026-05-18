@@ -251,15 +251,8 @@ service cloud.firestore {
       //   - itens[] deve existir e não estar vazio
       //   - status inicial deve ser 'pendente'
       //   - criadoEm deve ser serverTimestamp
-      allow create: if eVendedor()
-                    && semCamposProibidos()
-                    && request.resource.data.vendedorId == request.auth.uid
-                    && 'clienteTel' in request.resource.data
-                    && telValido(request.resource.data.clienteTel)
-                    && 'itens' in request.resource.data
-                    && request.resource.data.itens.size() > 0
-                    && request.resource.data.itens.size() <= 200
-                    && request.resource.data.status == 'pendente';
+      // Criação: qualquer um pode criar pedido (cliente sem Firebase Auth).
+      allow create: if semCamposProibidos();
 
       // Atualização:
       //   Admin → qualquer campo (aprovar, rejeitar, editar)

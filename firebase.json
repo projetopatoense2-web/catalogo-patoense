@@ -15,7 +15,16 @@
       "_headers",
       "_redirects",
       ".gitignore",
-      "node_modules/**"
+      "node_modules/**",
+      "**/*.exe",
+      "**/*.bat",
+      "**/*.ps1",
+      "**/*.sh",
+      "**/*.cmd",
+      "**/*.msi",
+      "**/*.dll",
+      "**/*.bin",
+      "**/*.run"
     ],
     "headers": [
       {
