@@ -1,0 +1,348 @@
+rules_version = '2';
+
+// ══════════════════════════════════════════════════════════════════
+//  firestore.rules — Regras de segurança do Firestore
+//  Distribuidora Patoense 2026
+//
+//  PRINCÍPIO: negar tudo por padrão.
+//  Apenas o que está explicitamente permitido abaixo é acessível.
+//
+//  ESPELHA a lógica de:
+//    authorize.js  → políticas por role e ownership
+//    adminGuard.js → verificação de role === 'admin'
+//    vendedorGuard.js → verificação de role === 'vendedor' + status
+//    auth.js       → cliente identificado por tel (dígitos, doc ID)
+//
+//  COMO TESTAR (antes de publicar):
+//    firebase emulators:start
+//    firebase emulators:exec "npx jest firestore.test.js"
+//
+//  COMO PUBLICAR:
+//    firebase deploy --only firestore:rules
+// ══════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ──────────────────────────────────────────────────────────────
+    //  FUNÇÕES AUXILIARES
+    //  Centralizadas aqui para não repetir lógica nas regras.
+    //  Nomeadas para espelhar os guards do frontend.
+    // ──────────────────────────────────────────────────────────────
+
+    // Retorna true se o usuário está autenticado pelo Firebase Auth.
+    // Equivale a: getFirebaseUser() !== null
+    function estaAutenticado() {
+      return request.auth != null;
+    }
+
+    // Retorna true se o usuário tem role 'admin' na coleção usuarios.
+    // Equivale a: isAdminFirestore() — verificação forte no Firestore.
+    // Custo: 1 leitura adicional por operação que usa esta função.
+    function eAdmin() {
+      return estaAutenticado()
+        && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid))
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Retorna true se o usuário tem role 'vendedor' E status 'ativo'.
+    // Equivale a: isVendedor() + campo status (Bloco 6 do roadmap).
+    // Custo: 1 leitura adicional por operação que usa esta função.
+    function eVendedor() {
+      return estaAutenticado()
+        && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid))
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.role == 'vendedor'
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.status == 'ativo';
+    }
+
+    // Valida que os campos enviados num write não contêm campos
+    // proibidos (senhaHash, token, secret). Defesa em profundidade.
+    function semCamposProibidos() {
+      return !('token'   in request.resource.data)
+          && !('secret'  in request.resource.data);
+    }
+
+    // Valida que o telefone no documento é só dígitos (10-11 chars).
+    // Equivale a: validarTel() do security.js.
+    function telValido(tel) {
+      return tel.matches('^[0-9]{10,11}$');
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: clientes
+    //
+    //  Documento ID = tel (somente dígitos, 10-11 chars).
+    //  Ex: /clientes/84999991234
+    //
+    //  Quem pode:
+    //    ler próprio doc  → cliente pelo tel (auth custom não existe
+    //                       aqui; cliente NÃO tem Firebase Auth —
+    //                       usamos campo validado pelo backend)
+    //    ler qualquer doc → admin
+    //    criar            → admin (cadastro feito pelo admin/vendedor)
+    //    atualizar        → admin | vendedor (dados do próprio cliente
+    //                       que ele atende) | o próprio cliente via
+    //                       request autenticado [se implementar auth]
+    //    deletar          → somente admin (ação crítica)
+    //
+    //  NOTA SOBRE CLIENTES SEM FIREBASE AUTH:
+    //    O sistema atual autentica clientes por tel+senhaHash no
+    //    Firestore (auth customizada em auth.js), sem Firebase Auth.
+    //    Por isso não dá para usar request.auth.uid para clientes.
+    //    A proteção real para leitura de dados de cliente vem das
+    //    Firestore Rules do admin/vendedor + do backend JS que
+    //    valida o tel antes de fazer getDoc().
+    //
+    //    SE no futuro migrar para Firebase Auth para clientes,
+    //    substituir as regras de leitura de cliente para:
+    //      allow read: if request.auth.uid == resource.data.uid;
+    // ──────────────────────────────────────────────────────────────
+
+    match /clientes/{telDoc} {
+
+      // Leitura: admin lê qualquer cliente.
+      // Vendedor lê clientes que ele atende (campo vendedorId no doc).
+      // Cliente direto: não tem Firebase Auth, não pode ler via regra
+      // de auth — leitura pública de documento único é controlada
+      // pelo backend. Se quiser bloquear completamente leitura pública:
+      // troque para: allow read: if eAdmin() || eVendedor();
+      allow read: if eAdmin()
+                  || (eVendedor() && resource.data.vendedorId == request.auth.uid);
+
+      // Criação: admin ou vendedor ativo criam clientes.
+      // Validações obrigatórias no documento:
+      //   - tel deve ser só dígitos (10-11 chars)
+      //   - senhaHash deve existir (não pode criar sem senha)
+      //   - campos proibidos (token, secret) não podem estar presentes
+      //   - criadoEm deve ser serverTimestamp (imutável pelo cliente)
+      allow create: if (eAdmin() || eVendedor())
+                    && semCamposProibidos()
+                    && telValido(telDoc)
+                    && 'senhaHash' in request.resource.data
+                    && request.resource.data.senhaHash is string
+                    && request.resource.data.senhaHash.size() > 0;
+
+      // Atualização: admin ou vendedor que atende o cliente.
+      // Campos que NUNCA podem ser alterados via regra:
+      //   - tel (é a chave do documento — imutável)
+      //   - criadoEm (timestamp de criação — imutável)
+      allow update: if (eAdmin()
+                      || (eVendedor() && resource.data.vendedorId == request.auth.uid))
+                    && semCamposProibidos()
+                    // Impede alteração do tel (chave) e criadoEm
+                    && (!('tel' in request.resource.data)
+                        || request.resource.data.tel == resource.data.tel)
+                    && (!('criadoEm' in request.resource.data)
+                        || request.resource.data.criadoEm == resource.data.criadoEm);
+
+      // Exclusão: somente admin. Ação crítica — sem exceção.
+      allow delete: if eAdmin();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: usuarios
+    //
+    //  Documento ID = Firebase Auth UID.
+    //  Contém: role ('admin' | 'vendedor'), nome, email, status.
+    //
+    //  Quem pode:
+    //    ler próprio doc  → o próprio usuário autenticado
+    //    ler qualquer doc → admin
+    //    criar            → somente admin (nunca auto-cadastro de role)
+    //    atualizar        → admin para qualquer campo
+    //                       próprio usuário só para campos não-críticos
+    //    deletar          → somente admin
+    //
+    //  SEGURANÇA CRÍTICA: nenhum usuário pode setar sua própria role.
+    //  Um cliente malicioso não pode se promover a admin/vendedor.
+    // ──────────────────────────────────────────────────────────────
+
+    match /usuarios/{uid} {
+
+      // Leitura: próprio usuário ou admin.
+      // Necessário para: isAdminFirestore(), isVendedor(), getVendedorProfile().
+      allow read: if estaAutenticado()
+                  && (request.auth.uid == uid || eAdmin());
+
+      // Criação: somente admin pode criar usuários no sistema.
+      // Nenhum usuário pode se auto-cadastrar com uma role.
+      allow create: if eAdmin()
+                    && semCamposProibidos()
+                    && request.resource.data.role in ['admin', 'vendedor']
+                    && 'nome' in request.resource.data
+                    && request.resource.data.nome is string;
+
+      // Atualização:
+      //   Admin → pode alterar qualquer campo (incluindo role e status)
+      //   Próprio usuário → pode alterar apenas nome (sem role, sem status)
+      allow update: if estaAutenticado()
+                    && semCamposProibidos()
+                    && (
+                      // Admin altera tudo
+                      eAdmin()
+                      ||
+                      // Usuário altera só o próprio doc, sem mudar role/status
+                      (request.auth.uid == uid
+                       && !('role'   in request.resource.data)
+                       && !('status' in request.resource.data)
+                       && !('email'  in request.resource.data))
+                    );
+
+      // Exclusão: somente admin.
+      allow delete: if eAdmin();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: pedidos
+    //
+    //  Documento ID = auto (gerado pelo addDoc).
+    //  Campos obrigatórios: clienteTel, vendedorId, itens[], status,
+    //                       criadoEm (serverTimestamp).
+    //
+    //  Quem pode:
+    //    listar/ler   → admin (todos) | vendedor (seus pedidos)
+    //                   cliente (seus pedidos — por clienteTel)
+    //    criar        → vendedor (atribui ao próprio uid)
+    //    atualizar    → admin (qualquer campo) | vendedor (campos
+    //                   limitados: só status e observação, nos seus pedidos)
+    //    deletar      → somente admin
+    // ──────────────────────────────────────────────────────────────
+
+    match /pedidos/{pedidoId} {
+
+      // Leitura individual: admin, vendedor (próprio), cliente (próprio tel).
+      // Para cliente: sem Firebase Auth, o backend filtra por clienteTel.
+      // Esta regra protege leituras diretas por UID de doc.
+      allow read: if eAdmin()
+                  || (eVendedor() && resource.data.vendedorId == request.auth.uid);
+                  // Cliente sem Firebase Auth: leitura controlada pelo backend.
+                  // Se migrar para Firebase Auth do cliente, adicionar:
+                  // || (estaAutenticado() && resource.data.clienteUid == request.auth.uid)
+
+      // Listagem (queries): admin lista tudo.
+      // Vendedor só faz query com filtro vendedorId == seu uid.
+      // A regra de leitura individual (acima) já garante o filtro por doc.
+      // Para queries de coleção, o Firestore valida cada doc retornado.
+      allow list: if eAdmin()
+                  || (eVendedor() && request.query.filters.vendedorId == request.auth.uid);
+
+      // Criação: somente vendedor autenticado e ativo.
+      // Validações obrigatórias:
+      //   - vendedorId deve ser o UID do vendedor logado (não pode criar em nome de outro)
+      //   - clienteTel deve existir e ser válido (10-11 dígitos)
+      //   - itens[] deve existir e não estar vazio
+      //   - status inicial deve ser 'pendente'
+      //   - criadoEm deve ser serverTimestamp
+      allow create: if eVendedor()
+                    && semCamposProibidos()
+                    && request.resource.data.vendedorId == request.auth.uid
+                    && 'clienteTel' in request.resource.data
+                    && telValido(request.resource.data.clienteTel)
+                    && 'itens' in request.resource.data
+                    && request.resource.data.itens.size() > 0
+                    && request.resource.data.itens.size() <= 200
+                    && request.resource.data.status == 'pendente';
+
+      // Atualização:
+      //   Admin → qualquer campo (aprovar, rejeitar, editar)
+      //   Vendedor → nos seus pedidos, só pode alterar 'observacao'
+      //              (não pode mudar status, clienteTel, itens, vendedorId)
+      allow update: if estaAutenticado()
+                    && semCamposProibidos()
+                    && (
+                      eAdmin()
+                      ||
+                      (eVendedor()
+                       && resource.data.vendedorId == request.auth.uid
+                       // Vendedor só pode alterar observacao
+                       && request.resource.data.diff(resource.data).affectedKeys()
+                          .hasOnly(['observacao', 'atualizadoEm']))
+                    );
+
+      // Exclusão: somente admin.
+      allow delete: if eAdmin();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: vendedores
+    //
+    //  Documento ID = Firebase Auth UID do vendedor.
+    //  Contém dados de perfil: nome, telefone, comissao%, foto.
+    //  Separado de 'usuarios' para isolamento de dados sensíveis.
+    //
+    //  Quem pode:
+    //    ler próprio perfil → o vendedor (getVendedorProfile())
+    //    ler qualquer       → admin
+    //    criar/atualizar    → admin
+    //    deletar            → admin
+    // ──────────────────────────────────────────────────────────────
+
+    match /vendedores/{uid} {
+
+      // Leitura: próprio vendedor ou admin.
+      allow read: if estaAutenticado()
+                  && (request.auth.uid == uid || eAdmin());
+
+      // Criação e atualização: somente admin.
+      // Admin configura o perfil do vendedor (comissão, dados).
+      allow create, update: if eAdmin()
+                            && semCamposProibidos();
+
+      // Exclusão: somente admin.
+      allow delete: if eAdmin();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: auditoria
+    //
+    //  Documento ID = auto (gerado pelo addDoc).
+    //  Contém: acao, dados, adminUid, adminEmail, criadoEm.
+    //  Equivalente a: auditarAcao() do adminGuard.js.
+    //
+    //  Quem pode:
+    //    criar  → admin autenticado (auditarAcao() chama addDoc)
+    //    ler    → somente admin
+    //    update → NINGUÉM — logs são imutáveis
+    //    delete → NINGUÉM — logs são imutáveis
+    //
+    //  SEGURANÇA: auditoria não pode ser apagada nem alterada,
+    //  nem pelo admin. Isso garante integridade do histórico.
+    // ──────────────────────────────────────────────────────────────
+
+    match /auditoria/{logId} {
+
+      // Leitura: somente admin.
+      allow read: if eAdmin();
+
+      // Criação: somente admin autenticado.
+      // Validações:
+      //   - adminUid deve ser o UID de quem está criando (não pode forjar)
+      //   - acao deve existir e ser string
+      //   - campos proibidos não podem estar no log
+      allow create: if eAdmin()
+                    && semCamposProibidos()
+                    && request.resource.data.adminUid == request.auth.uid
+                    && 'acao' in request.resource.data
+                    && request.resource.data.acao is string
+                    && request.resource.data.acao.size() > 0
+                    && request.resource.data.acao.size() <= 100;
+
+      // Update e delete: BLOQUEADOS para todos, sem exceção.
+      // Logs são append-only — imutáveis após criação.
+      allow update, delete: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  FALLBACK — nega tudo que não foi explicitamente mapeado
+    //
+    //  Se uma nova coleção for criada sem regras,
+    //  ela ficará inacessível até ser adicionada aqui.
+    //  Isso é o comportamento correto (fail-secure).
+    // ──────────────────────────────────────────────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+  }
+}

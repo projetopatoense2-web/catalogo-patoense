@@ -558,6 +558,44 @@ main{flex:1;padding:28px 28px 80px;min-width:0}
 }
 .profile-edit-btn:hover{background:var(--border)}
 
+/* ─── MODAL MEUS PEDIDOS ─── */
+.hist-modal-box{background:#fff;border-radius:20px;box-shadow:0 16px 48px rgba(11,47,138,.22);width:100%;max-width:680px;max-height:92vh;overflow-y:auto;animation:modalIn .28s cubic-bezier(.4,0,.2,1)}
+.hist-header{background:linear-gradient(135deg,#0B2F8A,#1546C8);color:#fff;padding:20px 24px;border-radius:20px 20px 0 0;display:flex;align-items:center;justify-content:space-between}
+.hist-header h2{font-size:18px;font-weight:800;margin:0}
+.hist-close{background:rgba(255,255,255,.15);border:none;color:#fff;width:32px;height:32px;border-radius:8px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.hist-close:hover{background:rgba(255,255,255,.25)}
+.hist-body{padding:20px 24px}
+.hist-filter-row{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.hist-filter-btn{background:var(--blue-pale);border:1.5px solid var(--border);border-radius:8px;padding:6px 14px;font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;color:var(--blue);cursor:pointer;transition:all .15s}
+.hist-filter-btn.active,.hist-filter-btn:hover{background:var(--blue);color:#fff;border-color:var(--blue)}
+.hist-card{border:1.5px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden;background:#fff;box-shadow:0 2px 8px rgba(11,47,138,.06)}
+.hist-card-head{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;user-select:none}
+.hist-card-head:hover{background:var(--blue-ultra)}
+.hist-card-id{font-size:13px;font-weight:800;color:var(--blue)}
+.hist-card-date{font-size:12px;color:var(--muted)}
+.hist-status{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;white-space:nowrap}
+.hist-status.pendente{background:#FEF3C7;color:#92400E}
+.hist-status.confirmado{background:#D1FAE5;color:#065F46}
+.hist-status.entregue{background:#DBEAFE;color:#1E3A8A}
+.hist-status.cancelado{background:#FEE2E2;color:#991B1B}
+.hist-card-body{display:none;padding:0 16px 14px;border-top:1px solid var(--border)}
+.hist-card-body.open{display:block}
+.hist-item-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #F3F4F6;font-size:13px}
+.hist-item-row:last-child{border-bottom:none}
+.hist-item-name{flex:1;color:var(--text)}
+.hist-item-qty{font-size:11px;color:var(--muted);font-family:monospace;margin:0 8px}
+.hist-item-val{font-weight:700;color:var(--blue);font-size:13px}
+.hist-meta{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #F3F4F6}
+.hist-meta-item{font-size:12px;color:var(--muted)}
+.hist-meta-item span{font-weight:700;color:var(--text)}
+.hist-total-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding:10px 14px;background:var(--blue-ultra);border-radius:8px}
+.hist-total-label{font-size:13px;font-weight:700;color:var(--blue)}
+.hist-total-val{font-size:16px;font-weight:900;color:var(--blue)}
+.hist-empty{text-align:center;padding:40px 20px;color:var(--muted)}
+.hist-empty-icon{font-size:48px;margin-bottom:12px}
+.hist-loading{text-align:center;padding:30px;color:var(--muted);font-size:14px}
+@media(max-width:600px){.hist-body{padding:14px 12px}.hist-card-head{flex-wrap:wrap}}
+
 /* ─── ADMIN PANEL ─── */
 .admin-panel{
   background:var(--white);border:1.5px solid #F59E0B55;border-radius:16px;
@@ -1725,7 +1763,27 @@ main{flex:1;padding:28px 28px 80px;min-width:0}
       <div class="profile-bar-actions">
         <button class="profile-edit-btn" onclick="openEdit()">✏️ Alterar cadastro</button>
         <button class="profile-edit-btn" onclick="openEditDoc()">🪪 Alterar CPF/CNPJ</button>
+        <button class="profile-edit-btn" id="btnMeusPedidos" onclick="openMeusPedidos()" style="color:#fff;background:var(--blue);border-color:var(--blue)">📦 Meus Pedidos <span id="pedidosBadge" style="display:none;background:rgba(255,255,255,.25);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px"></span></button>
         <button class="profile-edit-btn" style="color:var(--red);border-color:#FECACA" onclick="doLogout()">Sair</button>
+      </div>
+    </div>
+
+    <!-- MODAL MEUS PEDIDOS -->
+    <div class="modal-overlay" id="meusPedidosModal">
+      <div class="hist-modal-box">
+        <div class="hist-header">
+          <h2>📦 Meus Pedidos</h2>
+          <button class="hist-close" onclick="closeMeusPedidos()">✕</button>
+        </div>
+        <div class="hist-body">
+          <div class="hist-filter-row">
+            <button class="hist-filter-btn active" onclick="filtrarHistorico(this,'todos')">Todos</button>
+            <button class="hist-filter-btn" onclick="filtrarHistorico(this,'pendente')">🟡 Pendentes</button>
+            <button class="hist-filter-btn" onclick="filtrarHistorico(this,'confirmado')">🟢 Confirmados</button>
+            <button class="hist-filter-btn" onclick="filtrarHistorico(this,'entregue')">🔵 Entregues</button>
+          </div>
+          <div id="histPedidosList"><div class="hist-loading">⏳ Carregando pedidos...</div></div>
+        </div>
       </div>
     </div>
 
@@ -1928,6 +1986,56 @@ function _resetRateLimit(key) { delete _loginAttempts[key]; }
 function saveData(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
 function loadData(key, def){ try{ const v=localStorage.getItem(key); return v?JSON.parse(v):def; }catch(e){ return def; } }
 
+/* ══════════════════════════════════════════
+   SESSÃO SEGURA — Bloco 2
+   Salva apenas campos não-sensíveis do cliente.
+   Nunca persiste senhaHash, CPF, endereço ou e-mail.
+══════════════════════════════════════════ */
+const _SESSION_KEY    = 'dp2026:session';
+const _SESSION_MAX_MS = 8 * 60 * 60 * 1000; // 8 horas
+const _CAMPOS_SESSAO  = ['tel', 'nome', 'isAdmin'];
+const _CAMPOS_PROIB   = ['senhaHash', 'senha', 'password', 'token', 'secret'];
+
+function saveSession(user) {
+  try {
+    if (!user) { localStorage.removeItem(_SESSION_KEY); return; }
+    const sessao = {};
+    _CAMPOS_SESSAO.forEach(c => { if (c in user) sessao[c] = user[c]; });
+    sessao.savedAt = Date.now();
+    localStorage.setItem(_SESSION_KEY, JSON.stringify(sessao));
+  } catch(e) {}
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s || typeof s !== 'object') return null;
+    if (s.savedAt && (Date.now() - s.savedAt) > _SESSION_MAX_MS) {
+      localStorage.removeItem(_SESSION_KEY); return null;
+    }
+    _CAMPOS_PROIB.forEach(c => delete s[c]);
+    return s;
+  } catch(e) { return null; }
+}
+
+function clearSession() {
+  try { localStorage.removeItem(_SESSION_KEY); } catch(e) {}
+}
+
+// Migração silenciosa: remove chave antiga se ainda existir
+(function _migrarSessaoAntiga() {
+  try {
+    const velha = localStorage.getItem('patoense_user');
+    if (velha) {
+      const obj = JSON.parse(velha);
+      if (obj && obj.tel) saveSession(obj); // saveSession já filtra os campos
+      localStorage.removeItem('patoense_user');
+    }
+  } catch(e) {}
+})();
+
 // ── SALVAR CLIENTE APROVADO NO FIREBASE ──────────
 async function saveUserFirebase(user) {
   try {
@@ -2009,13 +2117,21 @@ async function saveOrderFirebase(orderData) {
   try {
     const fb = window._fb;
     if (!fb) return;
-    await fb.addDoc(fb.collection(fb.db, "pedidos"), {
+    // clienteTel salvo separado (só dígitos) para facilitar query do histórico
+    const clienteTel = currentUser ? (currentUser.tel||'').replace(/\D/g,'') : '';
+    const clienteNome = currentUser ? currentUser.nome : '';
+    const docRef = await fb.addDoc(fb.collection(fb.db, "pedidos"), {
       ...orderData,
+      clienteTel,
+      clienteNome,
+      status: orderData.confirmed ? 'confirmado' : 'pendente',
       criadoEm: fb.serverTimestamp()
     });
-    console.log('✅ Pedido salvo no Firebase');
+    console.log('✅ Pedido salvo no Firebase:', docRef.id);
+    return docRef.id;
   } catch(e) {
     console.warn('Firebase offline, pedido salvo apenas localmente:', e);
+    return null;
   }
 }
 
@@ -2024,10 +2140,33 @@ async function confirmOrderFirebase(docId) {
   try {
     const fb = window._fb;
     if (!fb || !docId) return;
-    await fb.updateDoc(fb.doc(fb.db, "pedidos", docId), { confirmed: true });
+    await fb.updateDoc(fb.doc(fb.db, "pedidos", docId), {
+      confirmed: true,
+      status: 'confirmado',
+      confirmedAt: fb.serverTimestamp()
+    });
   } catch(e) {
     console.warn('Erro ao confirmar no Firebase:', e);
   }
+}
+
+// ── MARCAR COMO ENTREGUE ────────────────
+async function setOrderDelivered(orderId) {
+  if (!confirm('Marcar este pedido como Entregue?')) return;
+  const orders = window.ORDERS || [];
+  const o = orders.find(x => (x._docId === orderId || x.id === orderId));
+  if (!o) { alert('Pedido não encontrado.'); return; }
+  o.status = 'entregue'; o.confirmed = true;
+  saveData('patoense_orders', orders);
+  try {
+    const fb = window._fb;
+    if (fb && orderId) {
+      await fb.updateDoc(fb.doc(fb.db, 'pedidos', orderId), {
+        status: 'entregue', confirmed: true, entregueEm: fb.serverTimestamp()
+      });
+    }
+  } catch(e) { console.warn('Erro ao marcar entregue:', e); }
+  renderAdmOrders();
 }
 
 /* ══════════════════════════════════════════
@@ -2068,7 +2207,7 @@ let PROMOS = loadData('patoense_promos', []);
 /* ══════════════════════════════════════════
    USUÁRIO
 ══════════════════════════════════════════ */
-let currentUser = loadData('patoense_user', null);
+let currentUser = loadSession();
 let docType = 'CPF';
 let editDocType = 'CPF';
 
@@ -2160,7 +2299,7 @@ async function doRegister(){
       }
     }
     currentUser = already;
-    saveData('patoense_user', currentUser);
+    saveSession(currentUser);
     if(btn){btn.textContent='Criar conta e acessar';btn.disabled=false;}
     closeAuth(); applyUserUI();
     return;
@@ -2179,7 +2318,7 @@ async function doRegister(){
   const savedId = await savePendingUserFirebase(newUser);
 
   // Salva localmente para mostrar tela de espera independente do Firebase
-  saveData('patoense_pending', newUser);
+  saveData('dp2026:pending', newUser);
   if(btn){btn.textContent='Criar conta e acessar';btn.disabled=false;}
 
   if (!savedId) {
@@ -2226,7 +2365,7 @@ async function doLogin(){
       errEl.classList.add('show'); return;
     }
     _resetRateLimit(rlKey);
-    currentUser=fbUser; saveData('patoense_user',currentUser);
+    currentUser=fbUser; saveSession(currentUser);
     if(btn){btn.textContent='Entrar';btn.disabled=false;}
     closeAuth(); applyUserUI(); return;
   }
@@ -2278,7 +2417,7 @@ function doLogout(){
   window._logout?.();
   currentUser = null;
   isAdm = false;
-  saveData('patoense_user', null);
+  clearSession();
   document.getElementById('profileBar').style.display='none';
   document.getElementById('userHeaderName').textContent='Minha Conta';
   document.getElementById('admHeaderBtn').style.display='none';
@@ -2291,7 +2430,7 @@ function doLogout(){
 function openEdit(){ if(!currentUser) return; document.getElementById('editNome').value=currentUser.nome||''; document.getElementById('editTel').value=currentUser.tel||''; document.getElementById('editEmail').value=currentUser.email||''; document.getElementById('editDoc').value=currentUser.doc||''; document.getElementById('editEndereco').value=currentUser.endereco||''; document.getElementById('editCidade').value=currentUser.cidade||''; document.getElementById('editUF').value=currentUser.uf||''; editDocType=currentUser.docTipo||'CPF'; setEditDocType(editDocType); document.getElementById('editModal').classList.add('open'); }
 function openEditDoc(){ openEdit(); setTimeout(()=>{ document.getElementById('editDoc').focus(); document.getElementById('editDoc').select(); },300); }
 function closeEdit(){ document.getElementById('editModal').classList.remove('open'); }
-async function saveEdit(){ currentUser.nome=document.getElementById('editNome').value.trim()||currentUser.nome; currentUser.tel=document.getElementById('editTel').value.trim()||currentUser.tel; currentUser.email=document.getElementById('editEmail').value.trim(); currentUser.docTipo=editDocType; currentUser.doc=document.getElementById('editDoc').value.trim()||currentUser.doc; currentUser.endereco=document.getElementById('editEndereco').value.trim(); currentUser.cidade=document.getElementById('editCidade').value.trim(); currentUser.uf=document.getElementById('editUF').value.trim(); saveData('patoense_user',currentUser);
+async function saveEdit(){ currentUser.nome=document.getElementById('editNome').value.trim()||currentUser.nome; currentUser.tel=document.getElementById('editTel').value.trim()||currentUser.tel; currentUser.email=document.getElementById('editEmail').value.trim(); currentUser.docTipo=editDocType; currentUser.doc=document.getElementById('editDoc').value.trim()||currentUser.doc; currentUser.endereco=document.getElementById('editEndereco').value.trim(); currentUser.cidade=document.getElementById('editCidade').value.trim(); currentUser.uf=document.getElementById('editUF').value.trim(); saveSession(currentUser);
 // 🔥 Atualiza no Firebase
 await saveUserFirebase(currentUser);
 applyUserUI(); closeEdit(); }
@@ -2327,8 +2466,8 @@ async function doAdmLogin(){
     closeAdmLogin();
     closeAuth();
     if(!currentUser){
-      currentUser = { nome: 'Administrador', tel: '0000000000', doc: '000.000.000-00', docTipo: 'CPF', endereco: '', cidade: 'Patos', uf: 'PB', isAdmin: true };
-      saveData('patoense_user', currentUser);
+      currentUser = { nome: 'Administrador', tel: '0000000000', isAdmin: true };
+      saveSession(currentUser);
       applyUserUI();
     }
     document.getElementById('admHeaderBtn').style.display='flex';
@@ -3025,7 +3164,8 @@ function renderAdmOrders(){
       ${!o.confirmed
         ? `<button class="order-confirm-btn" style="font-size:12px;padding:7px 14px">✅ Confirmar Pedido</button>
            <button class="order-cancel-btn" style="font-size:12px;padding:7px 14px">❌ Cancelar</button>`
-        : `<button class="order-cancel-btn" style="font-size:11px;padding:6px 12px;background:#FEE2E2;color:#DC2626;border:1px solid #FCA5A5;border-radius:8px;font-family:Nunito,sans-serif;font-weight:700;cursor:pointer">🗑 Excluir</button>`
+        : `<button class="order-confirm-btn" onclick="setOrderDelivered('${oid}')" style="background:#DBEAFE;color:#1E3A8A;border:1.5px solid #BFDBFE;font-size:12px;padding:7px 14px;border-radius:8px;font-family:Nunito,sans-serif;font-weight:700;cursor:pointer">📦 Entregue</button>
+           <button class="order-cancel-btn" style="font-size:11px;padding:6px 12px;background:#FEE2E2;color:#DC2626;border:1px solid #FCA5A5;border-radius:8px;font-family:Nunito,sans-serif;font-weight:700;cursor:pointer">🗑 Excluir</button>`
       }
       <span style="margin-left:auto;font-size:10px;color:var(--muted)">Cliente: <strong>${(o.cliente||'—').split('(')[0].trim()}</strong></span>`;
 
@@ -3066,6 +3206,9 @@ function renderAdmOrders(){
     actions.querySelector('.order-print-btn').addEventListener('click', (e)=>{ e.stopPropagation(); printOrderById(oid); });
     const cBtn = actions.querySelector('.order-confirm-btn');
     if(cBtn) cBtn.addEventListener('click', (e)=>{ e.stopPropagation(); confirmOrderById(oid); });
+    // Botão "Entregue" (apenas em pedidos confirmados)
+    const dBtn = actions.querySelectorAll('.order-confirm-btn')[1];
+    if(dBtn) dBtn.addEventListener('click', (e)=>{ e.stopPropagation(); setOrderDelivered(oid); });
     const xBtn = actions.querySelector('.order-cancel-btn');
     if(xBtn) xBtn.addEventListener('click', (e)=>{ e.stopPropagation(); cancelOrderById(oid); });
 
@@ -3415,6 +3558,159 @@ render();
 renderCart();
 renderPromoCarousel();
 
+/* ══════════════════════════════════════════
+   MEUS PEDIDOS — HISTÓRICO DO CLIENTE
+   Carrega pedidos do Firestore filtrados pelo
+   telefone do cliente logado (clienteTel).
+══════════════════════════════════════════ */
+
+let _histFiltro = 'todos';
+let _histPedidos = [];
+
+async function openMeusPedidos() {
+  if (!currentUser) return;
+  const modal = document.getElementById('meusPedidosModal');
+  modal.classList.add('open');
+  const listEl = document.getElementById('histPedidosList');
+  listEl.innerHTML = '<div class="hist-loading">⏳ Carregando seus pedidos...</div>';
+
+  try {
+    const fb = window._fb;
+    if (!fb) throw new Error('Firebase não disponível');
+
+    const clienteTel = (currentUser.tel || '').replace(/\D/g, '');
+    if (!clienteTel) throw new Error('Telefone não identificado');
+
+    // Busca pedidos onde clienteTel === número do cliente
+    const snap = await fb.getDocs(fb.collection(fb.db, 'pedidos'));
+    _histPedidos = [];
+    snap.forEach(d => {
+      const data = d.data();
+      const tel = (data.clienteTel || '').replace(/\D/g, '');
+      if (tel === clienteTel) {
+        _histPedidos.push({ _docId: d.id, ...data });
+      }
+    });
+
+    // Ordena do mais recente ao mais antigo
+    _histPedidos.sort((a, b) => {
+      const ta = a.ts || (a.criadoEm?.seconds ? a.criadoEm.seconds * 1000 : 0);
+      const tb = b.ts || (b.criadoEm?.seconds ? b.criadoEm.seconds * 1000 : 0);
+      return tb - ta;
+    });
+
+    // Atualiza badge
+    const badge = document.getElementById('pedidosBadge');
+    if (badge && _histPedidos.length > 0) {
+      badge.textContent = _histPedidos.length;
+      badge.style.display = 'inline-flex';
+    }
+
+    renderHistoricoPedidos();
+  } catch(e) {
+    document.getElementById('histPedidosList').innerHTML =
+      `<div class="hist-empty"><div class="hist-empty-icon">⚠️</div><p>Erro ao carregar pedidos.<br><small>${e.message}</small></p></div>`;
+  }
+}
+
+function closeMeusPedidos() {
+  document.getElementById('meusPedidosModal').classList.remove('open');
+}
+
+// Fecha ao clicar fora do modal
+document.getElementById('meusPedidosModal').addEventListener('click', function(e) {
+  if (e.target === this) closeMeusPedidos();
+});
+
+function filtrarHistorico(btn, filtro) {
+  _histFiltro = filtro;
+  document.querySelectorAll('.hist-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderHistoricoPedidos();
+}
+
+function renderHistoricoPedidos() {
+  const listEl = document.getElementById('histPedidosList');
+  if (!listEl) return;
+
+  let lista = _histPedidos;
+
+  if (_histFiltro !== 'todos') {
+    lista = lista.filter(o => resolveStatus(o) === _histFiltro);
+  }
+
+  if (!lista.length) {
+    const msgMap = {
+      'todos': 'Você ainda não fez nenhum pedido.',
+      'pendente': 'Nenhum pedido pendente.',
+      'confirmado': 'Nenhum pedido confirmado.',
+      'entregue': 'Nenhum pedido entregue.'
+    };
+    listEl.innerHTML = `<div class="hist-empty"><div class="hist-empty-icon">📭</div><p>${msgMap[_histFiltro] || 'Nenhum pedido encontrado.'}</p></div>`;
+    return;
+  }
+
+  listEl.innerHTML = lista.map((o, i) => {
+    const oid = o._docId || o.id || String(i);
+    const status = resolveStatus(o);
+    const totalQty = (o.items || []).reduce((s, it) => s + it.qty, 0);
+    const totalVal = (o.items || []).reduce((s, it) => s + (PRICES[it.code] ? PRICES[it.code] * it.qty : 0), 0);
+    const dataStr = o.date || (o.criadoEm?.seconds ? new Date(o.criadoEm.seconds * 1000).toLocaleDateString('pt-BR') : '—');
+
+    const itensHtml = (o.items || []).map(it => {
+      const sub = PRICES[it.code]
+        ? `<span class="hist-item-val">R$ ${(PRICES[it.code] * it.qty).toFixed(2).replace('.', ',')}</span>`
+        : '';
+      return `<div class="hist-item-row">
+        <span class="hist-item-name">#${it.code} — ${it.name}</span>
+        <span class="hist-item-qty">×${it.qty}</span>
+        ${sub}
+      </div>`;
+    }).join('');
+
+    const statusClass = { 'pendente': 'pendente', 'confirmado': 'confirmado', 'entregue': 'entregue', 'cancelado': 'cancelado' }[status] || 'pendente';
+    const statusLabel = { 'pendente': '⏳ Pendente', 'confirmado': '✅ Confirmado', 'entregue': '📦 Entregue', 'cancelado': '❌ Cancelado' }[status] || '⏳ Pendente';
+
+    return `<div class="hist-card">
+      <div class="hist-card-head" onclick="toggleHistCard(this)">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span class="hist-card-id">📦 Pedido #${o.id || oid.slice(-6).toUpperCase()}</span>
+          <span class="hist-card-date">${dataStr}${o.period ? ' — ' + o.period : ''}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">${totalQty} item(s)${totalVal > 0 ? ' · R$ ' + totalVal.toFixed(2).replace('.', ',') : ''}</span>
+          <span class="hist-status ${statusClass}">${statusLabel}</span>
+          <span class="hist-chevron" style="font-size:13px;color:var(--muted);display:inline-block;transition:transform .2s">▼</span>
+        </div>
+      </div>
+      <div class="hist-card-body">
+        ${itensHtml}
+        ${totalVal > 0 ? `<div class="hist-total-row"><span class="hist-total-label">💰 Total estimado</span><span class="hist-total-val">R$ ${totalVal.toFixed(2).replace('.', ',')}</span></div>` : ''}
+        <div class="hist-meta">
+          ${o.address && o.address !== '—' ? `<div class="hist-meta-item">📍 <span>${o.address}</span></div>` : ''}
+          ${o.payment ? `<div class="hist-meta-item">💳 <span>${o.payment}</span></div>` : ''}
+          ${o.vendedor ? `<div class="hist-meta-item">🧑‍💼 <span>${o.vendedor}</span></div>` : ''}
+          ${o.obs ? `<div class="hist-meta-item">📝 <span>${o.obs}</span></div>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleHistCard(head) {
+  const body = head.nextElementSibling;
+  const chevron = head.querySelector('.hist-chevron');
+  const isOpen = body.classList.toggle('open');
+  if (chevron) chevron.style.transform = isOpen ? 'rotate(180deg)' : '';
+}
+
+function resolveStatus(o) {
+  if (o.status === 'entregue') return 'entregue';
+  if (o.status === 'cancelado') return 'cancelado';
+  if (o.confirmed || o.status === 'confirmado') return 'confirmado';
+  return 'pendente';
+}
+
 // Expõe funções para o módulo Firebase
 window.renderPendingUsers = renderPendingUsers;
 window.renderAdmOrders = renderAdmOrders;
@@ -3445,10 +3741,27 @@ if(currentUser){
       const digits = currentUser.tel.replace(/\D/g, '');
       if (!digits || digits.length < 8) return; // telefone inválido — mantém sessão
       const snap = await fb.getDoc(fb.doc(fb.db, 'clientes', digits));
-      if (snap.exists()) return; // ✅ usuário confirmado — ok
+      if (snap.exists()) {
+        // ✅ Recarrega dados completos do Firestore na memória
+        // (não salva no localStorage — dados sensíveis ficam só na memória)
+        const dados = snap.data();
+        currentUser = {
+          ...currentUser,
+          doc:      dados.doc      || '',
+          docTipo:  dados.docTipo  || 'CPF',
+          endereco: dados.endereco || '',
+          cidade:   dados.cidade   || '',
+          uf:       dados.uf       || '',
+          email:    dados.email    || '',
+          status:   dados.status   || 'ativo',
+          // senhaHash NÃO é copiado — fica só no Firestore
+        };
+        applyUserUI();
+        return;
+      }
       // Só chega aqui se Firebase respondeu e o doc realmente não existe
       currentUser = null; isAdm = false;
-      saveData('patoense_user', null);
+      clearSession();
       document.getElementById('profileBar').style.display='none';
       document.getElementById('userHeaderName').textContent='Minha Conta';
       showWelcome();
@@ -3459,15 +3772,15 @@ if(currentUser){
   })();
 } else {
   // Verifica se tinha cadastro pendente
-  const pending = loadData('patoense_pending', null);
+  const pending = loadData('dp2026:pending', null);
   if(pending){
     // Verifica se foi aprovado desde a última vez
     setTimeout(async()=>{
       const approved = await checkUserApproved(pending.tel);
       if(approved){
         currentUser = approved;
-        saveData('patoense_user', currentUser);
-        saveData('patoense_pending', null);
+        saveSession(currentUser);
+        saveData('dp2026:pending', null);
         closeAuth();
         applyUserUI();
       } else {
