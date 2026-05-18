@@ -3,6 +3,6 @@
     "database": "(default)",
     "location": "southamerica-east1",
     "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
+    "indexes": "firestore_indexes.json"
   }
 }

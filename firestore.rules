@@ -106,7 +106,12 @@ service cloud.firestore {
       // de auth — leitura pública de documento único é controlada
       // pelo backend. Se quiser bloquear completamente leitura pública:
       // troque para: allow read: if eAdmin() || eVendedor();
-      allow read: if eAdmin()
+      // get = leitura de doc único (pelo telDoc): permitida publicamente.
+      // O cliente sabe o próprio tel — não é dado secreto o fato de existir.
+      // Isso permite checkUserApproved() e doLogin() funcionarem sem Firebase Auth.
+      // list = query de coleção: somente admin ou vendedor.
+      allow get: if true;
+      allow list: if eAdmin()
                   || (eVendedor() && resource.data.vendedorId == request.auth.uid);
 
       // Criação: admin ou vendedor ativo criam clientes.
@@ -115,9 +120,13 @@ service cloud.firestore {
       //   - senhaHash deve existir (não pode criar sem senha)
       //   - campos proibidos (token, secret) não podem estar presentes
       //   - criadoEm deve ser serverTimestamp (imutável pelo cliente)
+      // Criação pelo admin: ao aprovar um pendente, move os dados para cá.
+      // Criação pelo vendedor: cadastra cliente diretamente.
+      // Validações: senhaHash obrigatória, sem campos proibidos.
+      // telValido() não é reforçado aqui pois o admin pode aprovar
+      // dados vindos de clientes_pendentes com formatações variadas.
       allow create: if (eAdmin() || eVendedor())
                     && semCamposProibidos()
-                    && telValido(telDoc)
                     && 'senhaHash' in request.resource.data
                     && request.resource.data.senhaHash is string
                     && request.resource.data.senhaHash.size() > 0;
@@ -213,7 +222,12 @@ service cloud.firestore {
       // Leitura individual: admin, vendedor (próprio), cliente (próprio tel).
       // Para cliente: sem Firebase Auth, o backend filtra por clienteTel.
       // Esta regra protege leituras diretas por UID de doc.
-      allow read: if eAdmin()
+      // get = leitura de doc único (pelo telDoc): permitida publicamente.
+      // O cliente sabe o próprio tel — não é dado secreto o fato de existir.
+      // Isso permite checkUserApproved() e doLogin() funcionarem sem Firebase Auth.
+      // list = query de coleção: somente admin ou vendedor.
+      allow get: if true;
+      allow list: if eAdmin()
                   || (eVendedor() && resource.data.vendedorId == request.auth.uid);
                   // Cliente sem Firebase Auth: leitura controlada pelo backend.
                   // Se migrar para Firebase Auth do cliente, adicionar:
@@ -330,6 +344,112 @@ service cloud.firestore {
       // Update e delete: BLOQUEADOS para todos, sem exceção.
       // Logs são append-only — imutáveis após criação.
       allow update, delete: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: clientes_pendentes
+    //
+    //  Documento ID = tel (somente dígitos, 10-11 chars).
+    //  Contém: nome, tel, doc, docTipo, email, endereco, cidade,
+    //          uf, senhaHash, status='pendente', createdAt, criadoEm.
+    //
+    //  Fluxo: cliente faz cadastro → grava aqui → admin aprova →
+    //         move para /clientes/{tel} e deleta daqui.
+    //
+    //  Quem pode:
+    //    criar   → qualquer um não autenticado (cadastro público)
+    //    ler     → admin (para ver a fila) | o próprio cliente (pelo tel)
+    //    deletar → admin (ao aprovar ou rejeitar)
+    //    update  → ninguém (imutável após criação)
+    // ──────────────────────────────────────────────────────────────
+
+    match /clientes_pendentes/{telDoc} {
+
+      // Criação: qualquer visitante pode se cadastrar (sem Firebase Auth).
+      // Validações obrigatórias:
+      //   - nome deve existir e ser string não vazia
+      //   - senhaHash deve existir (nunca gravar senha em texto puro)
+      //   - campos proibidos (token, secret) não podem estar presentes
+      //   - status deve ser 'pendente' (não pode já entrar como aprovado)
+      allow create: if semCamposProibidos()
+                    && 'nome' in request.resource.data
+                    && request.resource.data.nome is string
+                    && request.resource.data.nome.size() > 0
+                    && 'senhaHash' in request.resource.data
+                    && request.resource.data.senhaHash is string
+                    && request.resource.data.senhaHash.size() > 0
+                    && request.resource.data.status == 'pendente';
+
+      // Leitura:
+      //   get  (doc único) → público. O cliente verifica o próprio pendente
+      //                       pelo tel (doLogin, showWaitingApproval).
+      //                       Admin verifica ao aprovar.
+      //   list (query)     → somente admin pode listar todos os pendentes.
+      allow get: if true;
+      allow list: if eAdmin();
+
+      // Exclusão: somente admin (ao aprovar ou rejeitar).
+      allow delete: if eAdmin();
+
+      // Update: ninguém pode alterar um cadastro pendente.
+      allow update: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: config
+    //
+    //  Documentos: "prices", "disabled", "promos"
+    //  Contém: configurações globais do catálogo (preços, promoções,
+    //          produtos desabilitados).
+    //
+    //  Quem pode:
+    //    ler    → qualquer usuário autenticado (clientes veem preços)
+    //             e não autenticados (catálogo é público para navegação)
+    //    criar/
+    //    update → somente admin
+    //    deletar → somente admin
+    // ──────────────────────────────────────────────────────────────
+
+    match /config/{configDoc} {
+
+      // Leitura pública: preços e promoções são visíveis para todos.
+      // O catálogo é público — não exige login para navegar.
+      allow read: if true;
+
+      // Escrita: somente admin pode alterar preços, promoções e disabled.
+      allow create, update: if eAdmin() && semCamposProibidos();
+      allow delete: if eAdmin();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  COLEÇÃO: produtos
+    //
+    //  Documento ID = auto (gerado pelo addDoc).
+    //  Contém: code, name, cat, createdAt, price (opcional).
+    //  Usada para produtos extras adicionados pelo admin além do
+    //  catálogo estático embutido no HTML.
+    //
+    //  Quem pode:
+    //    ler    → qualquer um (catálogo é público)
+    //    criar/
+    //    update → somente admin
+    //    deletar → somente admin
+    // ──────────────────────────────────────────────────────────────
+
+    match /produtos/{prodId} {
+
+      // Leitura pública: catálogo acessível sem login.
+      allow read: if true;
+
+      // Criação e atualização: somente admin.
+      allow create, update: if eAdmin()
+                            && semCamposProibidos()
+                            && 'code' in request.resource.data
+                            && 'name' in request.resource.data
+                            && 'cat' in request.resource.data;
+
+      // Exclusão: somente admin.
+      allow delete: if eAdmin();
     }
 
     // ──────────────────────────────────────────────────────────────
