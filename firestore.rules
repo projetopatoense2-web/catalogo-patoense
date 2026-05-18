@@ -168,10 +168,14 @@ service cloud.firestore {
 
     match /usuarios/{uid} {
 
-      // Leitura: próprio usuário ou admin.
-      // Necessário para: isAdminFirestore(), isVendedor(), getVendedorProfile().
-      allow read: if estaAutenticado()
-                  && (request.auth.uid == uid || eAdmin());
+      // Leitura: próprio usuário lê o PRÓPRIO documento — sem depender de eAdmin().
+      // CRÍTICO: eAdmin() faz getDoc('/usuarios/{uid}'), então se a regra exigisse
+      // eAdmin() para ler o próprio doc, criaria dependência circular e o admin
+      // jamais conseguiria autenticar (onAuthStateChanged falharia com permission-denied).
+      // Solução: uid == request.auth.uid é suficiente para leitura do próprio doc.
+      // list (query de coleção): somente admin pode listar todos os usuários.
+      allow get: if estaAutenticado() && request.auth.uid == uid;
+      allow list: if eAdmin();
 
       // Criação: somente admin pode criar usuários no sistema.
       // Nenhum usuário pode se auto-cadastrar com uma role.
