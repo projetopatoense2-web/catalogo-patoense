@@ -2490,6 +2490,7 @@ async function doAdmLogin(){
     // Ignora se o foco estiver em inputs/textareas
     const tag = document.activeElement.tagName;
     if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+    if(!e.key || typeof e.key !== 'string') return;
     buf += e.key.toLowerCase();
     if(buf.length > SEQ.length) buf = buf.slice(-SEQ.length);
     clearTimeout(timer);
